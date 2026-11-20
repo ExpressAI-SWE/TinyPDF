@@ -61,3 +61,9 @@ Run the benchmark from a desktop PowerShell session with access to Windows proce
 ```
 
 Run each executable against the same local PDF and repeat on the same machine. Window startup runs from process launch to the first main window handle. TinyPDF also records elapsed time from its Rust entry point to publishing the first PDF tile to the interface. The stationary sample begins after the warmup and can still include document loading. Memory and CPU include the process tree. Working set counts shared pages in every process that uses them. GPU dedicated and shared memory come from Windows counters when available. The generated 501-page fixture exercises page count and text. The public USGS Circular 1296 download is a 112,181,765-byte real-world workload. [USGS Circular 1296](https://pubs.usgs.gov/circ/2006/1296/)
+
+## Automated release checks
+
+The [Windows checks workflow](.github/workflows/windows.yml) runs formatting, locked tests and the dependency audit. Push, scheduled and manual runs also test optimized builds, run 30 fresh native reader processes on short and long documents, build the three Windows packages with checksum-verified tools, and install and remove each format in isolation. Test signing is confined to a disposable MSIX copy on the hosted runner. Candidate artifacts and checksums are attached to successful Windows runs.
+
+The [interactive stability workflow](.github/workflows/desktop.yml) requires a dedicated Windows x64 runner labelled `tinypdf-desktop`, a logged-in desktop, Rust, and Python with `Pillow`, `pywin32` and `pywinauto`. It repeats the document and link recovery suite and sends 6,000 wheel events. Run it from `main` with the desktop unlocked. Windows installer and desktop results inform the manual beta promotion decision.

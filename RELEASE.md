@@ -4,6 +4,8 @@ The v1 candidate tracks version `1.0.0-beta.1`. Its Windows Installer version is
 
 The v1 candidate passed 13 Rust tests and a Windows desktop run covering corrupt PDF retry, recovery after restoring a missing PDFium DLL, incorrect and correct passwords, HTTP redirects, HTML rejection, closing a downloaded PDF, and 768 rapid wheel events with 47 reversals. The 501-page run measured 7.51 MiB of idle private commit and 40.79 MiB peak total working set. The final view matched the initial reference crop byte for byte.
 
+The v1 packages build with `scripts/build-windows-candidate.ps1`. The local NSIS (7,911,922 bytes) and MSIX (10,277,632 bytes) passed extraction, payload comparison and three native PDF reads each. The local MSI (10,117,120 bytes) passed installation, Default Apps and Start Menu registration, three native PDF reads, and uninstallation. Use the hosted checks for clean-account NSIS and disposable signed MSIX validation. A public MSIX still requires publisher signing.
+
 The sections below record the earlier 0.2.0 hardening build and its evidence.
 
 ## 0.2.0 changes
