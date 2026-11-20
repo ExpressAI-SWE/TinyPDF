@@ -15,7 +15,8 @@ export global ReaderColors {
     out property <color> focus: dark ? #8fc6fa : #1f6aaa;
     out property <color> page-pending: dark ? #41464f : #dfe6ed;
     out property <color> button: dark ? #30353d : #f5f8fb;
-    out property <color> button-pressed: dark ? #252d38 : #cadcf0;
+    out property <color> button-pressed: dark ? #233c54 : #cadcf0;
+    out property <color> button-pressed-border: dark ? #6c94b8 : #5481aa;
     out property <color> accent-hover: dark ? #397bb2 : #2c6597;
     out property <color> accent-pressed: dark ? #27577f : #1b4264;
 }
@@ -26,24 +27,28 @@ export component ToolButton inherits Rectangle {
     in property <bool> selected;
     in property <bool> primary;
     in property <bool> quiet;
+    in property <bool> square;
     in property <bool> usable: true;
     in property <length> control-height: 36px;
     in property <TextHorizontalAlignment> text-align: center;
     callback activated();
+    property <bool> space-held;
+    property <bool> pressed: root.usable && (touch.pressed || root.space-held);
 
-    min-width: 34px;
-    preferred-width: caption.preferred-width + 20px;
-    min-height: min(control-height, 34px);
-    preferred-height: control-height;
+    min-width: min(root.control-height, 40px);
+    preferred-width: root.square ? root.control-height : caption.preferred-width + 20px;
+    min-height: min(root.control-height, 36px);
+    preferred-height: root.control-height;
     horizontal-stretch: 0;
-    border-radius: 8px;
+    border-radius: min(10px, self.height / 4);
     border-width: 1px;
     border-color: keyboard.has-focus && root.usable ? ReaderColors.focus
+        : root.pressed && !root.primary ? ReaderColors.button-pressed-border
         : (root.primary || (root.quiet && !root.selected)) ? transparent
         : !root.usable ? ReaderColors.border.transparentize(0.5) : ReaderColors.border;
     background: !root.usable ? transparent
-        : root.primary ? (touch.pressed ? ReaderColors.accent-pressed : touch.has-hover ? ReaderColors.accent-hover : ReaderColors.accent)
-        : touch.pressed ? ReaderColors.button-pressed
+        : root.primary ? (root.pressed ? ReaderColors.accent-pressed : touch.has-hover ? ReaderColors.accent-hover : ReaderColors.accent)
+        : root.pressed ? ReaderColors.button-pressed
         : touch.has-hover ? ReaderColors.raised
         : root.selected ? ReaderColors.selected
         : root.quiet ? transparent : ReaderColors.button;
@@ -52,10 +57,11 @@ export component ToolButton inherits Rectangle {
     accessible-label: root.name;
     accessible-enabled: root.usable;
     accessible-action-default => { if (root.usable) { root.activated(); } }
+    changed usable => { if (!root.usable) { root.space-held = false; } }
 
     caption := Text {
         x: 8px;
-        y: 0;
+        y: root.pressed ? 1px : 0px;
         width: parent.width - 16px;
         height: parent.height;
         text: root.label;
@@ -70,9 +76,25 @@ export component ToolButton inherits Rectangle {
 
     keyboard := FocusScope {
         enabled: root.usable;
+        changed has-focus => { if (!self.has-focus) { root.space-held = false; } }
         key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") {
+            if (event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta) {
+                return reject;
+            }
+            if (event.text == " ") {
+                if (!event.repeat) { root.space-held = true; }
+                return accept;
+            }
+            if (event.text == Key.Return) {
                 if (!event.repeat) { root.activated(); }
+                return accept;
+            }
+            return reject;
+        }
+        key-released(event) => {
+            if (event.text == " " && root.space-held) {
+                root.space-held = false;
+                if (root.usable) { root.activated(); }
                 return accept;
             }
             return reject;
@@ -80,6 +102,10 @@ export component ToolButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
         enabled: root.usable;
         mouse-cursor: pointer;
         clicked => {

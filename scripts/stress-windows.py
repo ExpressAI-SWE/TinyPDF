@@ -140,8 +140,9 @@ def check_recovery(executable, fixture):
             shutil.copyfile(fixture, broken)
             invoke(window, "Try again")
             wait_for("recovered PDF", lambda: rendered_paper(window, 1))
-            invoke(window, "Next page")
-            wait_for("next page", lambda: page_number(window) == "2")
+            check_toolbar_button(window)
+            invoke(window, "Previous page")
+            wait_for("previous page", lambda: page_number(window) == "2")
             invoke(window, "Previous page")
             wait_for("previous page", lambda: page_number(window) == "1")
             check_save_with_reader_lock(window, broken)
@@ -165,6 +166,39 @@ def check_recovery(executable, fixture):
         print("PASS PDF password rejection and retry", flush=True)
 
         check_pdf_links(executable, fixture, scratch)
+
+
+def check_toolbar_button(window):
+    next_button = window.child_window(title="Next page", control_type="Button")
+    next_button.wait("visible enabled", timeout=8)
+    box = next_button.rectangle()
+    assert abs((box.right - box.left) - (box.bottom - box.top)) <= 1, "navigation button is not square"
+    center = ((box.left + box.right) // 2, (box.top + box.bottom) // 2)
+    sample = (box.left + 7, center[1], box.left + 8, center[1] + 1)
+
+    def color():
+        return ImageGrab.grab(sample, all_screens=True).getpixel((0, 0))
+
+    mouse.move(coords=center)
+    time.sleep(0.10)
+    hovered = color()
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    try:
+        wait_for("visible mouse press", lambda: color() != hovered)
+        assert page_number(window) == "1", "mouse down triggered navigation"
+    finally:
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    wait_for("mouse release navigates", lambda: page_number(window) == "2")
+
+    focused = color()
+    win32api.keybd_event(win32con.VK_SPACE, 0, 0, 0)
+    try:
+        wait_for("visible Space press", lambda: color() != focused)
+        assert page_number(window) == "2", "holding Space triggered navigation"
+    finally:
+        win32api.keybd_event(win32con.VK_SPACE, 0, win32con.KEYEVENTF_KEYUP, 0)
+    wait_for("Space release navigates once", lambda: page_number(window) == "3")
+    print("PASS immediate mouse and keyboard feedback with single activation", flush=True)
 
 
 def check_save_with_reader_lock(window, path):

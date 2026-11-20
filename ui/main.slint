@@ -103,7 +103,11 @@ export component MainWindow inherits Window {
     property <bool> modal-open: root.password-requested || root.input-request != "";
     property <bool> text-prompt: root.input-request != "message" && root.input-request != "metadata" && root.input-request != "confirm";
     property <bool> drawing: root.annotation-tool != "" && root.annotation-tool != "select";
-    property <length> header-height: root.fullscreen ? 0px : !root.document-open ? 47px : root.annotating ? 180px : 94px;
+    property <length> tab-strip-height: 47px;
+    property <length> toolbar-height: 48px;
+    property <length> toolbar-bottom: root.tab-strip-height + root.toolbar-height;
+    property <length> header-height: root.fullscreen ? 0px : !root.document-open ? root.tab-strip-height
+        : root.toolbar-bottom + (root.annotating ? 86px : 0px);
     property <length> footer-height: root.fullscreen ? 0px : 25px;
     property <length> rail-width: root.showing-sidebar ? 232px : 0px;
     property <length> thumbnail-row-height: 151px;
@@ -1040,8 +1044,8 @@ export component MainWindow inherits Window {
 
             toolbar := Rectangle {
                 visible: root.document-open;
-                y: 47px;
-                height: 47px;
+                y: root.tab-strip-height;
+                height: root.toolbar-height;
                 background: ReaderColors.surface;
                 Rectangle { y: 0; height: 1px; background: ReaderColors.border; }
                 Rectangle { y: parent.height - 1px; height: 1px; background: ReaderColors.border; }
@@ -1049,8 +1053,8 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 9px;
                     padding-right: 9px;
-                    padding-top: 5px;
-                    padding-bottom: 5px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
                     spacing: 4px;
                     ToolButton {
                         label: "Pages";
@@ -1063,6 +1067,8 @@ export component MainWindow inherits Window {
                     ToolButton {
                         label: "‹";
                         name: "Previous page";
+                        square: true;
+                        control-height: 40px;
                         usable: root.document-ready && root.page-number > 1 && !root.modal-open;
                         activated => { root.command("previous-page"); }
                     }
@@ -1091,6 +1097,8 @@ export component MainWindow inherits Window {
                     ToolButton {
                         label: "›";
                         name: "Next page";
+                        square: true;
+                        control-height: 40px;
                         usable: root.page-number < root.page-count && !root.modal-open;
                         activated => { root.command("next-page"); }
                     }
@@ -1105,13 +1113,15 @@ export component MainWindow inherits Window {
                     ToolButton {
                         label: "−";
                         name: "Zoom out";
-                        usable: root.document-open && !root.modal-open;
+                        square: true;
+                        control-height: 40px;
+                        usable: root.document-ready && !root.modal-open;
                         activated => { root.command("zoom-out"); }
                     }
                     ToolButton {
                         label: root.zoom-label;
                         name: "Change zoom";
-                        usable: root.document-open && !root.modal-open;
+                        usable: root.document-ready && !root.modal-open;
                         activated => { zoom-menu.show(); }
                         zoom-menu := PopupWindow {
                             forward-focus: zoom-entry;
@@ -1150,7 +1160,9 @@ export component MainWindow inherits Window {
                     ToolButton {
                         label: "+";
                         name: "Zoom in";
-                        usable: root.document-open && !root.modal-open;
+                        square: true;
+                        control-height: 40px;
+                        usable: root.document-ready && !root.modal-open;
                         activated => { root.command("zoom-in"); }
                     }
                     ToolButton {
@@ -1282,7 +1294,7 @@ export component MainWindow inherits Window {
             }
 
             if root.annotating && root.document-open && !root.fullscreen && !root.modal-open: AnnotationBar {
-                y: 94px;
+                y: root.toolbar-bottom;
                 tool: root.annotation-tool;
                 pen-color: root.pen-color-value;
                 pen-width: root.pen-width-value;
@@ -1348,8 +1360,8 @@ export component MainWindow inherits Window {
                 ToolButton {
                     label: "‹";
                     name: "Previous page";
+                    square: true;
                     control-height: 44px;
-                    width: 45px;
                     usable: root.controls-visible && !root.modal-open && root.page-number > 1;
                     activated => { root.command("previous-page"); root.reveal(); }
                 }
@@ -1361,8 +1373,8 @@ export component MainWindow inherits Window {
                 ToolButton {
                     label: "›";
                     name: "Next page";
+                    square: true;
                     control-height: 44px;
-                    width: 45px;
                     usable: root.controls-visible && !root.modal-open && root.page-number < root.page-count;
                     activated => { root.command("next-page"); root.reveal(); }
                 }
@@ -1370,8 +1382,8 @@ export component MainWindow inherits Window {
                 ToolButton {
                     label: "−";
                     name: "Zoom out";
+                    square: true;
                     control-height: 44px;
-                    width: 45px;
                     usable: root.controls-visible && !root.modal-open;
                     activated => { root.command("zoom-out"); root.reveal(); }
                 }
@@ -1383,8 +1395,8 @@ export component MainWindow inherits Window {
                 ToolButton {
                     label: "+";
                     name: "Zoom in";
+                    square: true;
                     control-height: 44px;
-                    width: 45px;
                     usable: root.controls-visible && !root.modal-open;
                     activated => { root.command("zoom-in"); root.reveal(); }
                 }

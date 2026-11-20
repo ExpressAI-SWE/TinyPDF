@@ -6,6 +6,8 @@ The v1 candidate passed 14 Rust tests and Windows desktop checks covering corrup
 
 A Windows file-lock regression confirmed that TinyPDF leaves the original PDF intact if another reader keeps it locked. The desktop regression confirmed that a note saves successfully when the other reader releases a temporary lock. The page number field waits until the selected document is ready before exposing its page value.
 
+Navigation and zoom use square 40-pixel targets in the desktop toolbar and 44-pixel targets in fullscreen. Buttons show a pressed color immediately and keep the entire surface clickable. The desktop suite verifies the square geometry, visible mouse and Space-key press feedback, and a single navigation action on release.
+
 Build the v1 packages with `scripts/build-windows-candidate.ps1`. Local NSIS and MSIX payloads passed extraction and native PDF reading. The MSI passed installation, Default Apps and Start Menu registration, native PDF reading, and uninstallation. Hosted checks cover clean-account NSIS and disposable signed MSIX validation. A public MSIX still requires publisher signing.
 
 The sections below record the earlier 0.2.0 hardening build and its evidence.
