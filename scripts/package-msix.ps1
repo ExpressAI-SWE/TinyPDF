@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)] [string] $MakeAppx,
     [string] $Publisher = 'CN=TinyPDF',
     [string] $SignTool,
-    [string] $CertificateThumbprint
+    [string] $CertificateThumbprint,
+    [switch] $Standalone
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,9 @@ $work = [IO.Directory]::CreateTempSubdirectory('TinyPDF-msix-').FullName
 try {
     Expand-Archive -LiteralPath $PortableZip -DestinationPath $work
     $payload = Join-Path $work 'TinyPDF-win-x64'
+    $info = (Get-Item -LiteralPath (Join-Path $payload 'tinypdf.exe')).VersionInfo
+    if (-not $info.ProductVersion) { throw 'The Windows executable lacks version information.' }
+    $version = "$($info.ProductMajorPart).$($info.ProductMinorPart).$($info.ProductBuildPart)"
     $packages = (New-Item -ItemType Directory -Path (Join-Path $work 'packages')).FullName
     $assets = (New-Item -ItemType Directory -Path (Join-Path $payload 'Assets')).FullName
     Add-Type -AssemblyName System.Drawing
@@ -39,7 +43,7 @@ try {
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
          IgnorableNamespaces="uap rescap">
-  <Identity Name="TinyPDF.Reader" Publisher="$publisherXml" Version="0.1.0.0" ProcessorArchitecture="x64" />
+  <Identity Name="TinyPDF.Reader" Publisher="$publisherXml" Version="$version.0" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>TinyPDF</DisplayName>
     <PublisherDisplayName>TinyPDF</PublisherDisplayName>
@@ -65,17 +69,20 @@ try {
   <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
 </Package>
 "@ | Set-Content -Encoding utf8 -LiteralPath (Join-Path $payload 'AppxManifest.xml')
-    & $MakeAppx pack /d $payload /p (Join-Path $packages 'TinyPDF-x64.msix') /o
+    $package = Join-Path $packages $(if ($Standalone) { 'TinyPDF.msix' } else { 'TinyPDF-x64.msix' })
+    & $MakeAppx pack /d $payload /p $package
     if ($LASTEXITCODE) { throw 'MakeAppx could not build the package.' }
-    $bundle = Join-Path $work 'TinyPDF-win-x64.msixbundle'
-    & $MakeAppx bundle /d $packages /p $bundle /o
-    if ($LASTEXITCODE) { throw 'MakeAppx could not build the bundle.' }
-    if ($SignTool) {
-        & $SignTool sign /sha1 $CertificateThumbprint /fd SHA256 $bundle
-        if ($LASTEXITCODE) { throw 'SignTool could not sign the bundle.' }
+    if (-not $Standalone) {
+        $package = Join-Path $work 'TinyPDF-win-x64.msixbundle'
+        & $MakeAppx bundle /d $packages /p $package
+        if ($LASTEXITCODE) { throw 'MakeAppx could not build the bundle.' }
     }
-    $output = Join-Path $dist (Split-Path -Leaf $bundle)
-    [IO.File]::Move($bundle, $output, $true)
+    if ($SignTool) {
+        & $SignTool sign /sha1 $CertificateThumbprint /fd SHA256 $package
+        if ($LASTEXITCODE) { throw 'SignTool could not sign the package.' }
+    }
+    $output = Join-Path $dist (Split-Path -Leaf $package)
+    [IO.File]::Move($package, $output)
     Get-FileHash -LiteralPath $output
 } finally {
     if ((Split-Path -Parent $work) -eq [IO.Path]::GetTempPath().TrimEnd('\') -and

@@ -47,6 +47,12 @@ export component MainWindow inherits Window {
     in property <float> scroll-visible-fraction: 1;
     in property <string> status-text;
     in property <bool> document-open;
+    in property <bool> document-loading;
+    in property <bool> link-downloading;
+    in property <bool> windows-settings-available;
+    in property <string> open-error;
+    in property <bool> password-error;
+    in property <string> input-error;
     in property <bool> dark-mode;
     in property <bool> restore-session;
     in property <bool> default-fit-width;
@@ -92,7 +98,8 @@ export component MainWindow inherits Window {
     callback drop-files(data-transfer);
 
     property <bool> annotating;
-    property <bool> showing-sidebar: root.document-open && root.sidebar-open && !root.fullscreen;
+    property <bool> document-ready: root.page-count > 0;
+    property <bool> showing-sidebar: root.document-ready && root.sidebar-open && !root.fullscreen;
     property <bool> modal-open: root.password-requested || root.input-request != "";
     property <bool> text-prompt: root.input-request != "message" && root.input-request != "metadata" && root.input-request != "confirm";
     property <bool> drawing: root.annotation-tool != "" && root.annotation-tool != "select";
@@ -284,6 +291,7 @@ export component MainWindow inherits Window {
                     root.command("open");
                     return accept;
                 }
+                if (event.text == "l" || event.text == "L") { root.command("open-link"); return accept; }
                 if (event.text == "w" || event.text == "W") { root.command("close-current-tab"); return accept; }
                 if (event.text == Key.Tab || event.text == Key.Backtab) {
                     root.command(event.modifiers.shift ? "previous-tab" : "next-tab"); return accept;
@@ -379,6 +387,7 @@ export component MainWindow inherits Window {
                 accessible-label: "Document " + root.sidebar-mode;
 
                 for item in root.sidebar-items: ToolButton {
+                    quiet: true;
                     height: root.sidebar-mode == "thumbnails" ? root.thumbnail-row-height : 40px;
                     width: rail-list.visible-width;
                     label: root.sidebar-mode == "thumbnails" ? "" : item.label;
@@ -494,14 +503,19 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    for tile in root.tiles: Image {
+                    for tile in root.tiles: Rectangle {
                         x: tile.x * 1px;
                         y: tile.y * 1px;
                         width: tile.width * 1px;
                         height: tile.height * 1px;
-                        source: tile.bitmap;
-                        image-fit: fill;
-                        accessible-role: none;
+                        background: tile.bitmap.width > 0 ? transparent : ReaderColors.page-pending;
+                        if tile.bitmap.width > 0: Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: tile.bitmap;
+                            image-fit: fill;
+                            accessible-role: none;
+                        }
                     }
 
                     for slot in root.pages: Rectangle {
@@ -635,6 +649,15 @@ export component MainWindow inherits Window {
                     usable: !root.modal-open;
                     activated => { root.command("open"); }
                 }
+                ToolButton {
+                    x: 137px;
+                    y: 146px;
+                    width: 134px;
+                    height: 38px;
+                    label: "Open PDF link";
+                    usable: !root.modal-open && !root.link-downloading;
+                    activated => { root.command("open-link"); }
+                }
                 if root.recent-items.length > 0: Rectangle {
                     x: 22px;
                     y: 203px;
@@ -658,6 +681,48 @@ export component MainWindow inherits Window {
                             height: 33px;
                             usable: !root.modal-open;
                             activated => { root.open-recent(index); }
+                        }
+                    }
+                }
+            }
+
+            if root.document-loading || root.open-error != "": Rectangle {
+                width: min(440px, parent.width - 40px);
+                height: load-panel.preferred-height + 36px;
+                background: ReaderColors.surface;
+                border-color: ReaderColors.border;
+                border-width: 1px;
+                border-radius: 12px;
+                load-panel := VerticalLayout {
+                    x: 18px;
+                    y: 18px;
+                    width: parent.width - 36px;
+                    spacing: 12px;
+                    Text {
+                        text: root.document-loading ? "Opening PDF…" : "Could not open PDF";
+                        color: ReaderColors.ink;
+                        font-size: 20px;
+                        font-weight: 650;
+                        accessible-live-region: polite;
+                    }
+                    if !root.document-loading: Text {
+                        text: root.open-error;
+                        color: ReaderColors.muted;
+                        wrap: word-wrap;
+                    }
+                    if !root.document-loading: HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        ToolButton {
+                            label: "Try again";
+                            primary: true;
+                            usable: !root.modal-open;
+                            activated => { root.command("retry-open"); keyboard.focus(); }
+                        }
+                        ToolButton {
+                            label: "Open another PDF";
+                            usable: !root.modal-open;
+                            activated => { root.command("open"); }
                         }
                     }
                 }
@@ -764,6 +829,7 @@ export component MainWindow inherits Window {
                 width: 114px;
                 height: 39px;
                 name: "New tab";
+                quiet: true;
                 usable: !root.modal-open;
                 activated => { root.command("new-tab"); }
                 Image { x: 4px; width: 27px; height: 27px; source: @image-url("../assets/tinypdf.png"); accessible-role: none; }
@@ -801,6 +867,7 @@ export component MainWindow inherits Window {
                     FileMark { x: 8px; width: 23px; height: 23px; }
                     ToolButton {
                         x: 31px;
+                        quiet: true;
                         y: 0;
                         width: parent.width - 63px;
                         height: parent.height;
@@ -812,13 +879,14 @@ export component MainWindow inherits Window {
                     }
                     ToolButton {
                         x: parent.width - self.width - 2px;
+                        quiet: true;
                         y: 2px;
                         width: 34px;
                         height: parent.height - 4px;
                         label: "X";
                         name: "Close " + tab.title;
                         usable: !root.modal-open;
-                        activated => { root.close-tab(index); }
+                        activated => { root.close-tab(index); if (!root.modal-open) { keyboard.focus(); } }
                     }
                     if index == root.active-tab: Rectangle {
                         y: parent.height - 2px;
@@ -920,6 +988,17 @@ export component MainWindow inherits Window {
                                     activated => { root.command("settings-" + option.id); }
                                 }
                                 ToolButton {
+                                    label: "Open PDF link";
+                                    text-align: left;
+                                    usable: !root.link-downloading;
+                                    activated => { settings-menu.close(); root.command("open-link"); }
+                                }
+                                if root.windows-settings-available: ToolButton {
+                                    label: "Windows Default apps";
+                                    text-align: left;
+                                    activated => { settings-menu.close(); root.command("default-apps"); }
+                                }
+                                ToolButton {
                                     label: "About TinyPDF";
                                     text-align: left;
                                     activated => { settings-menu.close(); about-tinypdf.show(); }
@@ -972,18 +1051,24 @@ export component MainWindow inherits Window {
                     ToolButton {
                         label: "Pages";
                         name: "Toggle document sidebar";
-                        usable: root.document-open && !root.modal-open;
+                        usable: root.document-ready && !root.modal-open;
                         selected: root.sidebar-open;
                         activated => { root.command("toggle-sidebar"); }
                     }
                     ToolbarDivider {}
+                    ToolButton {
+                        label: "‹";
+                        name: "Previous page";
+                        usable: root.document-ready && root.page-number > 1 && !root.modal-open;
+                        activated => { root.command("previous-page"); }
+                    }
                     page-field := Entry {
                         width: 53px;
                         name: "Go to page";
                         horizontal-alignment: center;
                         input-type: number;
-                        enabled: root.document-open && !root.modal-open;
-                        text: root.document-open ? "" + root.page-number : "";
+                        enabled: root.document-ready && !root.modal-open;
+                        text: root.document-ready ? "" + root.page-number : "";
                         accepted(value) => {
                             if (value.is-float()) { root.go-to-page(value.to-float()); }
                             self.text = "" + root.page-number;
@@ -995,6 +1080,12 @@ export component MainWindow inherits Window {
                         font-size: 12px;
                         color: ReaderColors.muted;
                         vertical-alignment: center;
+                    }
+                    ToolButton {
+                        label: "›";
+                        name: "Next page";
+                        usable: root.page-number < root.page-count && !root.modal-open;
+                        activated => { root.command("next-page"); }
                     }
                     ToolButton {
                         label: "Find";
@@ -1213,6 +1304,13 @@ export component MainWindow inherits Window {
                     vertical-alignment: center;
                     overflow: elide;
                 }
+                if root.link-downloading: Text {
+                    text: "Downloading PDF…";
+                    color: ReaderColors.muted;
+                    accessible-live-region: polite;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
                 if root.document-open: Text {
                     text: root.reading-mode == "single" ? "Single page" : root.reading-mode == "spread" ? "Two-page spread" : "Continuous scroll";
                     color: ReaderColors.muted;
@@ -1333,7 +1431,7 @@ export component MainWindow inherits Window {
                 TouchArea {}
                 Rectangle {
                     width: min(470px, parent.width - 40px);
-                    height: root.password-requested || root.text-prompt ? 187px : min(335px, parent.height - 44px);
+                    height: root.input-request == "open-link" ? 206px : root.password-requested || root.text-prompt ? 187px : min(335px, parent.height - 44px);
                     border-radius: 11px;
                     background: ReaderColors.surface;
                     border-width: 1px;
@@ -1350,14 +1448,22 @@ export component MainWindow inherits Window {
                             font-weight: 650;
                         }
                         if root.password-requested: Text {
-                            text: "Enter the password to open this PDF.";
+                            text: root.password-error ? "Incorrect password. Try again." : "Enter the password to open this PDF.";
                             color: ReaderColors.muted;
+                            accessible-live-region: polite;
+                        }
+                        if root.input-request == "open-link": Text {
+                            text: root.input-error == "" ? "Enter an HTTP or HTTPS link to a PDF." : root.input-error;
+                            color: ReaderColors.muted;
+                            wrap: word-wrap;
+                            accessible-live-region: polite;
                         }
                         prompt-field := Entry {
                             visible: root.password-requested || root.text-prompt;
                             enabled: root.modal-open && self.visible;
                             height: self.visible ? 38px : 0px;
                             name: root.password-requested ? "PDF password" : root.input-title;
+                            placeholder-text: root.input-request == "open-link" ? "https://example.com/document.pdf" : "";
                             input-type: root.password-requested ? InputType.password : InputType.text;
                             accepted => { root.submit-modal(); }
                             key-pressed(event) => {
@@ -1379,7 +1485,7 @@ export component MainWindow inherits Window {
                                 activated => { root.cancel-modal(); }
                             }
                             ToolButton {
-                                label: root.password-requested ? "Unlock" : root.input-request == "confirm" ? "Continue" : root.text-prompt ? "Apply" : "Close";
+                                label: root.password-requested ? "Unlock" : root.input-request == "confirm" ? "Discard changes" : root.input-request == "open-link" ? "Open link" : root.text-prompt ? "Apply" : "Close";
                                 primary: true;
                                 activated => { root.submit-modal(); }
                             }

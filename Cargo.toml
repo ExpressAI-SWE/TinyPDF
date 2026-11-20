@@ -1,6 +1,6 @@
 [package]
 name = "tinypdf"
-version = "0.1.0"
+version = "1.0.0-beta.1"
 edition = "2024"
 publish = false
 
@@ -11,11 +11,14 @@ rfd = "=0.17.2"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.150"
 slint = { version = "=1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility", "raw-window-handle-06"] }
+tempfile = "=3.27.0"
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
+url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "=0.6.2"
 windows = { version = "=0.62.2", features = ["Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Win32_System_WinRT", "Win32_System_Com", "Win32_Media_Speech"] }
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_Storage_Xps", "Win32_System_Memory", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_Storage_Xps", "Win32_System_Memory", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 slint-build = "=1.19.0"

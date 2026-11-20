@@ -6,7 +6,9 @@ param(
 
     [string] $PdfiumArchive,
 
-    [string] $MakeNsi
+    [string] $MakeNsi,
+
+    [string] $OutputDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,11 +86,22 @@ try {
 $pdfium = & (Join-Path $PSScriptRoot 'prepare-pdfium.ps1') -Platform $platform -Archive $PdfiumArchive
 $pdfiumRoot = Split-Path -Parent (Split-Path -Parent $pdfium)
 $name = "TinyPDF-$platform"
+$extension = if ($windowsTarget) { 'zip' } else { 'tar.gz' }
 $buildRoot = Join-Path $root 'target'
-$dist = Join-Path $root 'dist'
+$dist = if ($OutputDirectory) {
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+} else {
+    Join-Path $root 'dist'
+}
+$archive = Join-Path $dist "$name.$extension"
+$installer = if ($MakeNsi) {
+    Join-Path $dist $(if ($platform -eq 'win-x64') { 'TinyPDF-Setup.exe' } else { "$name-setup.exe" })
+}
+foreach ($outputFile in @($archive, $installer) | Where-Object { $_ }) {
+    if (Test-Path -LiteralPath $outputFile) { throw "Output already exists: $outputFile. Choose a new output directory." }
+}
 $stage = Join-Path $buildRoot "package-$([guid]::NewGuid())"
 $payload = Join-Path $stage $name
-$extension = if ($windowsTarget) { 'zip' } else { 'tar.gz' }
 $stagedArchive = Join-Path $stage "$name.$extension"
 
 New-Item -ItemType Directory -Path $dist, $payload -Force | Out-Null
@@ -128,16 +141,16 @@ try {
         & tar -czf $stagedArchive -C $stage $name
         if ($LASTEXITCODE -ne 0) { throw "Could not create $name.$extension." }
     }
-    $archive = Join-Path $dist "$name.$extension"
-    [System.IO.File]::Move($stagedArchive, $archive, $true)
-    $installer = $null
     if ($MakeNsi) {
-        $installer = Join-Path $dist "$name-setup.exe"
-        $stagedInstaller = Join-Path $stage "$name-setup.exe"
-        & $MakeNsi '/WX' "/DPAYLOAD=$payload" "/DOUTPUT=$stagedInstaller" (Join-Path $PSScriptRoot 'windows-install.nsi') | Out-Host
+        $info = $binaryFile.VersionInfo
+        if (-not $info.ProductVersion) { throw 'The Windows executable lacks version information.' }
+        $version = "$($info.ProductMajorPart).$($info.ProductMinorPart).$($info.ProductBuildPart)"
+        $stagedInstaller = Join-Path $stage 'TinyPDF-Setup.exe'
+        & $MakeNsi '/WX' "/DPAYLOAD=$payload" "/DOUTPUT=$stagedInstaller" "/DPRODUCT_VERSION=$version" "/DRELEASE_LABEL=$($info.ProductVersion)" (Join-Path $PSScriptRoot 'windows-install.nsi') | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'NSIS failed to build the installer.' }
-        [System.IO.File]::Move($stagedInstaller, $installer, $true)
+        [System.IO.File]::Move($stagedInstaller, $installer)
     }
+    [System.IO.File]::Move($stagedArchive, $archive)
 
     [PSCustomObject] @{
         Target = $Target

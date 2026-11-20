@@ -21,6 +21,7 @@ impl App {
         tab.search.matches.clear();
         tab.search.selected = None;
         tab.search.done = query.is_empty();
+        tab.search.failed = false;
         ui.set_search_text(tab.search.query.as_str().into());
         self.worker.send(Command::Search(
             tab.id,
@@ -35,7 +36,9 @@ impl App {
         let Some(index) = self.active else { return };
         let search = &self.tabs[index].search;
         let count = search.matches.len();
-        let status = if search.query.is_empty() {
+        let status = if search.failed {
+            "Find interrupted".into()
+        } else if search.query.is_empty() {
             String::new()
         } else if count == 0 && search.done {
             "No matches".into()
@@ -76,8 +79,10 @@ impl App {
     pub(super) fn jump_to_match(&mut self, ui: &MainWindow, selected: usize) {
         let Some(index) = self.active else { return };
         let tab = &mut self.tabs[index];
+        let Some(result) = tab.search.matches.get(selected) else {
+            return;
+        };
         tab.search.selected = Some(selected);
-        let result = &tab.search.matches[selected];
         tab.reading.page = result.page;
         tab.reading.fraction = 0.;
         let point = match tab.reading.rotation {
@@ -131,15 +136,35 @@ impl App {
     pub(super) fn ask(&mut self, ui: &MainWindow, prompt: Prompt, title: &str, value: &str) {
         ui.set_input_title(title.into());
         ui.set_input_value(value.into());
+        ui.set_input_error("".into());
         ui.set_input_request(
             match prompt {
                 Prompt::Message => "message",
+                Prompt::OpenLink => "open-link",
                 Prompt::Note(..) => "annotation",
                 _ => "confirm",
             }
             .into(),
         );
         self.prompt = Some(prompt);
+    }
+
+    pub(super) fn report_message(&mut self, ui: &MainWindow, title: &str, value: &str) {
+        if self.prompt.is_none() && !ui.get_password_requested() {
+            self.ask(ui, Prompt::Message, title, value);
+        } else if let Some(index) = self.active {
+            self.tabs[index].pending_message = Some((title.into(), value.into()));
+        }
+    }
+
+    pub(super) fn show_pending_message(&mut self, ui: &MainWindow) {
+        if self.prompt.is_none()
+            && !ui.get_password_requested()
+            && let Some(index) = self.active
+            && let Some((title, value)) = self.tabs[index].pending_message.take()
+        {
+            self.ask(ui, Prompt::Message, &title, &value);
+        }
     }
 
     pub(super) fn input_submit(&mut self, ui: &MainWindow, value: String) {
@@ -157,12 +182,15 @@ impl App {
                     let _ = ui.hide();
                 }
             }
+            Some(Prompt::OpenLink) => self.start_download(ui, value),
             Some(Prompt::Note(id, page, rotation, mut gesture)) if !value.trim().is_empty() => {
                 gesture.text = value.chars().take(8192).collect();
                 self.send_edit(id, Command::Gesture(id, page, rotation, gesture));
             }
             _ => {}
         }
+        self.sync_load(ui);
+        self.show_pending_message(ui);
     }
 
     fn send_edit(&mut self, id: TabId, command: Command) {
@@ -175,7 +203,7 @@ impl App {
     pub(super) fn pointer(&mut self, ui: &MainWindow, page: usize, phase: &str, point: Point) {
         let Some(index) = self.active else { return };
         let tab = &self.tabs[index];
-        if !tab.opened || page >= tab.sizes.len() {
+        if !tab.opened() || page >= tab.sizes.len() {
             return;
         }
         let id = tab.id;
@@ -303,6 +331,19 @@ impl App {
                 }
                 return;
             }
+            "open-link" => {
+                if !self.downloading {
+                    self.ask(ui, Prompt::OpenLink, "Open PDF link", "");
+                }
+                return;
+            }
+            #[cfg(windows)]
+            "default-apps" => {
+                if let Err(error) = crate::platform::open_default_apps() {
+                    self.report_message(ui, "Could not open Windows settings", &error);
+                }
+                return;
+            }
             "reveal-controls" => {
                 self.reveal(ui);
                 return;
@@ -310,13 +351,12 @@ impl App {
             "input-cancel" => {
                 self.prompt = None;
                 ui.set_input_request("".into());
+                self.sync_load(ui);
+                self.show_pending_message(ui);
                 return;
             }
             "cancel-password" => {
-                ui.set_password_requested(false);
-                if let Some(id) = self.password.take()
-                    && let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
-                {
+                if let Some(index) = self.active.filter(|_| ui.get_password_requested()) {
                     self.close(ui, index, true);
                 }
                 return;
@@ -332,7 +372,11 @@ impl App {
             "close-current-tab" => self.close(ui, index, false),
             "next-tab" => self.activate(ui, (index + 1) % self.tabs.len()),
             "previous-tab" => self.activate(ui, (index + self.tabs.len() - 1) % self.tabs.len()),
-            _ if !self.tabs[index].opened => {}
+            "retry-open" if matches!(self.tabs[index].load, super::DocumentLoad::Failed(_)) => {
+                self.tabs[index].load = super::DocumentLoad::Idle;
+                self.activate(ui, index);
+            }
+            _ if !self.tabs[index].opened() => {}
             "previous-page" => self.step(ui, -1),
             "next-page" => self.step(ui, 1),
             "first-page" => self.go_to(ui, 0),
@@ -463,11 +507,11 @@ impl App {
         if tab.saving {
             return;
         }
-        if !tab.dirty && !save_as && tab.pending == 0 {
+        if !tab.dirty && !save_as && tab.pending == 0 && tab.downloaded.is_none() {
             ui.set_status_text("No unsaved changes.".into());
             return;
         }
-        let path = if save_as {
+        let path = if save_as || tab.downloaded.is_some() {
             let Some(mut path) = rfd::FileDialog::new()
                 .set_title("Save PDF")
                 .add_filter("PDF documents", &["pdf"])
@@ -483,6 +527,19 @@ impl App {
         } else {
             tab.path.clone()
         };
+        if tab
+            .downloaded
+            .as_ref()
+            .is_some_and(|download| path.parent() == download.path.parent())
+        {
+            self.ask(
+                ui,
+                Prompt::Message,
+                "Choose a different folder",
+                "Save downloaded PDFs outside TinyPDF’s temporary folder.",
+            );
+            return;
+        }
         let id = tab.id;
         if self
             .tabs
@@ -498,6 +555,7 @@ impl App {
             return;
         }
         self.tabs[index].saving = true;
+        self.tabs[index].save_error = None;
         self.worker.send(Command::Save(id, path));
         ui.set_status_text("Saving document…".into());
     }

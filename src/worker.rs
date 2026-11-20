@@ -47,7 +47,12 @@ impl Raster {
 }
 
 pub enum Command {
-    Open(TabId, PathBuf, Option<String>),
+    Open(
+        TabId,
+        PathBuf,
+        Option<String>,
+        Option<Arc<crate::links::DownloadedPdf>>,
+    ),
     Close(TabId),
     Outline(TabId),
     Metadata(TabId),
@@ -92,6 +97,7 @@ pub enum Event {
     Outline(TabId, Vec<OutlineEntry>),
     Metadata(TabId, Vec<(String, String)>),
     Matches(TabId, u64, Vec<Match>, bool),
+    SearchFailed(TabId, u64, String),
     Selected(TabId, usize, Vec<Rect>),
     Recognized(TabId, Result<String, String>),
     PageText(TabId, Result<String, String>),
@@ -111,7 +117,85 @@ fn deliver(event: Event) {
 #[derive(Default)]
 struct Requests {
     commands: VecDeque<Command>,
-    plan: Option<(TabId, u64, Vec<Raster>)>,
+    plan: Option<RenderPlan>,
+}
+
+struct RenderPlan {
+    tab: TabId,
+    generation: u64,
+    jobs: Vec<Raster>,
+    visible: usize,
+}
+
+impl RenderPlan {
+    fn permits_in_progress(&self, key: Raster) -> bool {
+        let candidates = if self.visible == 0 {
+            &self.jobs[..]
+        } else {
+            &self.jobs[..self.visible]
+        };
+        candidates.contains(&key)
+    }
+
+    fn complete(&mut self, key: Raster) -> bool {
+        let Some(index) = self.jobs.iter().position(|job| *job == key) else {
+            return false;
+        };
+        self.jobs.remove(index);
+        self.visible -= usize::from(index < self.visible);
+        true
+    }
+}
+
+#[cfg(test)]
+mod render_plan_tests {
+    use super::*;
+
+    #[test]
+    fn viewport_changes_promote_visible_tiles_and_cancel_obsolete_work() {
+        let first = Raster {
+            tab: 1,
+            page: 0,
+            rotation: 0,
+            revision: 0,
+            full_width: 10,
+            full_height: 10,
+            x: 0,
+            y: 0,
+            thumbnail: false,
+        };
+        let second = Raster { page: 1, ..first };
+        let thumbnail = Raster {
+            thumbnail: true,
+            ..first
+        };
+        for generation in 0..2_000 {
+            let (visible, prefetch) = if generation % 2 == 0 {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            let mut plan = RenderPlan {
+                tab: 1,
+                generation,
+                jobs: vec![visible, prefetch, thumbnail],
+                visible: 1,
+            };
+            assert!(plan.permits_in_progress(visible));
+            assert!(!plan.permits_in_progress(prefetch));
+            assert!(!plan.permits_in_progress(thumbnail));
+            assert!(!plan.complete(Raster {
+                revision: 1,
+                ..visible
+            }));
+            assert!(!plan.complete(Raster { tab: 2, ..visible }));
+            assert!(plan.complete(visible));
+            assert!(plan.permits_in_progress(prefetch));
+            assert!(plan.complete(prefetch));
+            assert!(!plan.permits_in_progress(prefetch));
+            assert!(plan.permits_in_progress(thumbnail));
+        }
+    }
 }
 
 pub struct Worker {
@@ -144,14 +228,14 @@ impl Worker {
                         let mut request = worker_queue
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if let Some((id, current, jobs)) = request.plan.take() {
-                            if active != id {
+                        if let Some(plan) = request.plan.take() {
+                            if active != plan.tab {
                                 inactive_to_trim = Some(active);
                                 coordinates.clear();
                             }
-                            active = id;
-                            generation = current;
-                            rasters = jobs.into();
+                            active = plan.tab;
+                            generation = plan.generation;
+                            rasters = plan.jobs.into();
                         }
                         request.commands.pop_front()
                     };
@@ -192,22 +276,8 @@ impl Worker {
                             continue;
                         }
                         if let Some(tab) = documents.get(&key.tab) {
-                            if !key.thumbnail && !coordinates.contains(&(key.page, key.rotation)) {
-                                if let Ok(position) =
-                                    tab.document.page_coordinates(key.page as u32, key.rotation)
-                                {
-                                    deliver(Event::Coordinates(
-                                        key.tab,
-                                        key.page,
-                                        key.rotation,
-                                        position,
-                                    ));
-                                }
-                                if coordinates.len() == 32 {
-                                    coordinates.pop_front();
-                                }
-                                coordinates.push_back((key.page, key.rotation));
-                            }
+                            let needs_coordinates =
+                                !key.thumbnail && !coordinates.contains(&(key.page, key.rotation));
                             let region = key.region();
                             let mut pixels =
                                 SharedPixelBuffer::<Rgba8Pixel>::new(region.width, region.height);
@@ -216,25 +286,41 @@ impl Worker {
                                 region,
                                 key.rotation,
                                 pixels.make_mut_bytes(),
+                                needs_coordinates,
                                 || {
                                     if worker_epoch.load(Ordering::Relaxed) == generation {
                                         return false;
                                     }
-                                    // Keep rendering a tile that survived the viewport change.
+                                    // Give newly visible work precedence over speculative work.
                                     let requests = worker_queue.lock().unwrap();
                                     requests
                                         .plan
                                         .as_ref()
-                                        .is_none_or(|(_, _, jobs)| !jobs.contains(&key))
+                                        .is_none_or(|plan| !plan.permits_in_progress(key))
                                 },
                             ) {
-                                Ok(()) => {
-                                    if let Some((_, _, jobs)) =
-                                        &mut worker_queue.lock().unwrap().plan
-                                    {
-                                        jobs.retain(|job| *job != key);
+                                Ok(position) => {
+                                    let wanted = worker_queue
+                                        .lock()
+                                        .unwrap()
+                                        .plan
+                                        .as_mut()
+                                        .is_none_or(|plan| plan.complete(key));
+                                    if wanted {
+                                        deliver(Event::Tile(key, pixels));
+                                        if let Some(position) = position {
+                                            if coordinates.len() == 32 {
+                                                coordinates.pop_front();
+                                            }
+                                            coordinates.push_back((key.page, key.rotation));
+                                            deliver(Event::Coordinates(
+                                                key.tab,
+                                                key.page,
+                                                key.rotation,
+                                                position,
+                                            ));
+                                        }
                                     }
-                                    deliver(Event::Tile(key, pixels));
                                 }
                                 Err(PdfError::Cancelled) => {}
                                 Err(error) => deliver(Event::TileFailed(key, error.to_string())),
@@ -287,7 +373,11 @@ impl Worker {
                                         }
                                     }
                                     Err(error) => {
-                                        deliver(Event::Status(error.to_string()));
+                                        deliver(Event::SearchFailed(
+                                            active,
+                                            search.token,
+                                            error.to_string(),
+                                        ));
                                         search.page = count;
                                     }
                                 }
@@ -339,21 +429,31 @@ impl Worker {
     }
 
     pub fn send(&self, command: Command) {
-        self.queue
+        let mut requests = self
+            .queue
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .commands
-            .push_back(command);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Command::Search(tab, ..) = &command {
+            requests
+                .commands
+                .retain(|queued| !matches!(queued, Command::Search(id, ..) if id == tab));
+        }
+        requests.commands.push_back(command);
         let _ = self.wake.try_send(());
     }
 
-    pub fn render(&self, tab: TabId, jobs: Vec<Raster>) {
+    pub fn render(&self, tab: TabId, jobs: Vec<Raster>, visible: usize) {
         let mut requests = self
             .queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let epoch = self.epoch.fetch_add(1, Ordering::Relaxed) + 1;
-        requests.plan = Some((tab, epoch, jobs));
+        requests.plan = Some(RenderPlan {
+            tab,
+            generation: epoch,
+            jobs,
+            visible,
+        });
         let _ = self.wake.try_send(());
     }
 }
@@ -376,6 +476,7 @@ struct Edit {
 
 struct OpenDocument<'a> {
     document: Document<'a>,
+    _downloaded: Option<Arc<crate::links::DownloadedPdf>>,
     first_size: (f32, f32),
     next_size: usize,
     sizes: Vec<(f32, f32)>,
@@ -390,7 +491,7 @@ struct OpenDocument<'a> {
 
 fn process<'a>(
     command: Command,
-    engine: &'a std::cell::OnceCell<Result<Pdfium, PdfError>>,
+    engine: &'a std::cell::OnceCell<Pdfium>,
     tabs: &mut HashMap<TabId, OpenDocument<'a>>,
 ) {
     let id = match &command {
@@ -411,11 +512,22 @@ fn process<'a>(
         Command::Speak(..) | Command::StopSpeech => return,
         Command::Stop => return,
     };
-    if let Command::Open(_, path, password) = command {
-        let result = match engine.get_or_init(Pdfium::load) {
-            Ok(engine) => engine.open(&path, password.as_deref()),
-            Err(error) => Err(PdfError::Library(error.to_string())),
-        };
+    if let Command::Open(_, path, password, downloaded) = command {
+        if engine.get().is_none() {
+            match Pdfium::load() {
+                Ok(pdfium) => {
+                    let _ = engine.set(pdfium);
+                }
+                Err(error) => {
+                    deliver(Event::OpenFailed(id, error));
+                    return;
+                }
+            }
+        }
+        let result = engine
+            .get()
+            .expect("PDFium was just initialized")
+            .open(&path, password.as_deref());
         match result {
             Ok(document) => {
                 let count = document.page_count() as usize;
@@ -424,6 +536,7 @@ fn process<'a>(
                     id,
                     OpenDocument {
                         document,
+                        _downloaded: downloaded,
                         first_size,
                         next_size: 1,
                         sizes: Vec::new(),
@@ -836,7 +949,7 @@ fn recognize(
             full_height,
         };
         let mut rgba = vec![0; (width * height * 4) as usize];
-        document.render_region_rgba(page, region, rotation, &mut rgba, || false)?;
+        document.render_region_rgba(page, region, rotation, &mut rgba, false, || false)?;
         // Grayscale keeps the WinRT input compact and avoids channel-order conversion.
         let gray: Vec<_> = rgba
             .chunks_exact(4)

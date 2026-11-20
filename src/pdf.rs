@@ -497,6 +497,11 @@ impl Pdfium {
         if pages <= 0 {
             return Err(PdfError::Pdf("This PDF has no readable pages."));
         }
+        if pages > 1_000_000 {
+            return Err(PdfError::Invalid(
+                "This PDF exceeds the supported page count.",
+            ));
+        }
         let permissions = unsafe { (self.api.permissions)(native.handle.raw) };
         Ok(Document {
             native: RefCell::new(native),
@@ -907,6 +912,14 @@ impl Document<'_> {
 
     pub fn page_coordinates(&self, page: u32, rotation: u8) -> Result<PageCoordinates, PdfError> {
         let page = self.load_page(page)?;
+        self.loaded_page_coordinates(&page, rotation)
+    }
+
+    fn loaded_page_coordinates(
+        &self,
+        page: &Handle,
+        rotation: u8,
+    ) -> Result<PageCoordinates, PdfError> {
         let rotation = c_int::from(rotation % 4);
         let map = |x, y| {
             let (mut pdf_x, mut pdf_y) = (0.0, 0.0);
@@ -966,8 +979,10 @@ impl Document<'_> {
             },
             rotation,
             output,
+            false,
             cancel,
         )
+        .map(|_| ())
     }
 
     pub fn render_region_rgba<T: Fn() -> bool>(
@@ -976,8 +991,9 @@ impl Document<'_> {
         region: RenderRegion,
         rotation: u8,
         output: &mut [u8],
+        include_coordinates: bool,
         cancel: T,
-    ) -> Result<(), PdfError> {
+    ) -> Result<Option<PageCoordinates>, PdfError> {
         let RenderRegion {
             x,
             y,
@@ -1085,7 +1101,11 @@ impl Document<'_> {
             }
             forms.context.page.set((-1, ptr::null_mut()));
         }
-        Ok(())
+        Ok(if include_coordinates {
+            self.loaded_page_coordinates(&page, rotation).ok()
+        } else {
+            None
+        })
     }
 
     fn text_page(&self, page: &Handle) -> Result<Handle, PdfError> {
@@ -1962,6 +1982,8 @@ fn stroke(output: &mut String, points: &[Point]) {
 mod tests {
     use super::*;
 
+    static PDFIUM_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn fixture() -> String {
         let contents =
             "1 0 0 rg 25 35 20 10 re f\n0 g BT /F1 16 Tf 55 100 Td (tiny reader tiny) Tj ET\n";
@@ -2009,6 +2031,7 @@ mod tests {
             let _ = fs::remove_file(self.0.join("other.pdf"));
             let _ = fs::remove_file(self.0.join("replacement.pdf"));
             let _ = fs::remove_file(self.0.join("edited-elsewhere.pdf"));
+            let _ = fs::remove_file(self.0.join("protected-graphics.pdf"));
             let _ = fs::remove_dir(&self.0);
         }
     }
@@ -2032,6 +2055,9 @@ mod tests {
         ignore = "requires bundled PDFium or PDFIUM_LIBRARY_PATH"
     )]
     fn pdfium_renders_selects_searches_and_reopens_embedded_annotations() {
+        let _exclusive = PDFIUM_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let scratch = Scratch(env::temp_dir().join(format!(
             "tinypdf-engine-{}-{}",
             std::process::id(),
@@ -2087,8 +2113,10 @@ mod tests {
             full_width: 200,
             full_height: 120,
         };
-        pdf.render_region_rgba(0, region, 0, &mut tile, || false)
+        let coordinates = pdf
+            .render_region_rgba(0, region, 0, &mut tile, true, || false)
             .unwrap();
+        assert_eq!(coordinates, Some(pdf.page_coordinates(0, 0).unwrap()));
         let index = (107 * 200 + 10) * 4;
         assert_eq!(&full[index..index + 4], &[255, 0, 0, 255]);
         assert!(
@@ -2098,7 +2126,7 @@ mod tests {
                 .all(|pixel| *pixel == [255, 0, 0, 255])
         );
         assert!(matches!(
-            pdf.render_region_rgba(0, region, 0, &mut tile, || true),
+            pdf.render_region_rgba(0, region, 0, &mut tile, true, || true),
             Err(PdfError::Cancelled)
         ));
         assert!(
@@ -2265,5 +2293,47 @@ mod tests {
                 .len(),
             marks.len() - 1
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "requires bundled PDFium or PDFIUM_LIBRARY_PATH"
+    )]
+    fn protected_pdf_can_retry_password_and_render_image_vector_and_transparency() {
+        let _exclusive = PDFIUM_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scratch = Scratch(env::temp_dir().join(format!(
+            "tinypdf-protected-{}-{}",
+            std::process::id(),
+            SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        )));
+        fs::create_dir(&scratch.0).unwrap();
+        let path = scratch.0.join("protected-graphics.pdf");
+        fs::write(
+            &path,
+            include_bytes!("../tests/fixtures/protected-graphics.pdf"),
+        )
+        .unwrap();
+        let engine = Pdfium::load().unwrap();
+        for password in [None, Some("wrong")] {
+            assert!(matches!(
+                engine.open(&path, password),
+                Err(PdfError::PasswordRequired)
+            ));
+        }
+        let pdf = engine.open(&path, Some("classroom")).unwrap();
+        assert_eq!(pdf.page_count(), 1);
+        let mut rgba = vec![0; 120 * 80 * 4];
+        pdf.render_rgba(0, 120, 80, 0, &mut rgba, || false).unwrap();
+        let pixel = |x: usize, y: usize| &rgba[(y * 120 + x) * 4..(y * 120 + x) * 4 + 4];
+        assert_eq!(pixel(10, 15), &[0, 0, 255, 255]);
+        assert_eq!(pixel(90, 20), &[0, 255, 0, 255]);
+        let blended = pixel(50, 60);
+        assert_eq!((blended[0], blended[3]), (255, 255));
+        assert!(blended[1].abs_diff(128) <= 1 && blended[2].abs_diff(128) <= 1);
+        drop(pdf);
+        fs::remove_file(path).unwrap();
     }
 }

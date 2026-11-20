@@ -38,6 +38,33 @@ pub fn set_caption_theme(window: &slint::Window, dark: bool) {
 pub use printing::PrintJob;
 
 #[cfg(windows)]
+pub fn open_default_apps() -> Result<(), String> {
+    use std::ptr::null;
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+    let uri: Vec<u16> = "ms-settings:defaultapps"
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            null(),
+            uri.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result <= 32 {
+        return Err(format!(
+            "Windows could not open Default apps (code {result})."
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 mod printing {
     use crate::pdf::Document;
     use std::ffi::c_void;

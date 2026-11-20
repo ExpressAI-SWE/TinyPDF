@@ -175,4 +175,28 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn viewport_boundaries_and_large_direction_changes_keep_the_right_pages() {
+        let mut layout = Layout::default();
+        let reading = Reading {
+            zoom: Zoom::FitWidth,
+            ..Reading::default()
+        };
+        layout.rebuild(
+            &[(200., 300.), (350., 240.), (120., 600.)],
+            &reading,
+            (232., 200.),
+        );
+        assert_eq!(layout.scale, 1.);
+        assert!((layout.pages[0].x + layout.pages[0].width / 2. - layout.width / 2.).abs() < 0.01);
+        let second = layout.pages[1];
+        assert!(layout.visible(second.y - 16., 16.).is_empty());
+        assert_eq!(layout.visible(second.y - 16., 17.)[0].page, 1);
+        for index in (0..2_000).map(|step| if step % 2 == 0 { 2 } else { 0 }) {
+            let top = layout.position(index, 0., 200.);
+            assert_eq!(layout.anchor(top).unwrap().0, index);
+            assert_eq!(layout.visible(top, 200.)[0].page, index);
+        }
+    }
 }

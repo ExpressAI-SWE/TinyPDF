@@ -1,11 +1,12 @@
 use crate::{
     MainWindow,
-    app::{App, Prompt, SidebarMode, title},
+    app::{App, DocumentLoad, SidebarMode, title, with_ui},
     layout::Placement,
     pdf::{PdfError, Point, Rect},
     worker::Event,
 };
-use slint::{Image, Model, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Image, Model, Rgba8Pixel, SharedPixelBuffer, TimerMode};
+use std::time::Duration;
 
 impl App {
     pub(super) fn event(&mut self, ui: &MainWindow, event: Event) {
@@ -14,23 +15,14 @@ impl App {
                 let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
                     return;
                 };
-                if count == 0 || count > 1_000_000 {
-                    self.close(ui, index, true);
-                    self.ask(
-                        ui,
-                        Prompt::Message,
-                        "Could not open PDF",
-                        "The document has an unsupported page count.",
-                    );
-                    return;
-                }
                 let tab = &mut self.tabs[index];
                 tab.reading.page = tab.reading.page.min(count - 1);
                 tab.reading.bookmarks.retain(|&page| page < count);
                 tab.sizes = vec![valid_size(size); count];
-                tab.opened = true;
-                tab.restoring = false;
-                self.settings.record(tab.path.clone(), tab.reading.clone());
+                tab.load = DocumentLoad::Ready;
+                if tab.downloaded.is_none() {
+                    self.settings.record(tab.path.clone(), tab.reading.clone());
+                }
                 if self.active == Some(index) {
                     ui.set_status_text("".into());
                     self.activate(ui, index);
@@ -43,38 +35,26 @@ impl App {
                 let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
                     return;
                 };
-                match error {
-                    PdfError::Library(message) => {
-                        self.tabs[index].requested = false;
-                        if self.active == Some(index) {
-                            ui.set_status_text("PDF engine unavailable".into());
-                            self.ask(
-                                ui,
-                                Prompt::Message,
-                                "Could not start the PDF engine",
-                                &message,
-                            );
-                        }
+                let tab = &mut self.tabs[index];
+                tab.load = match error {
+                    PdfError::PasswordRequired => DocumentLoad::Password {
+                        rejected: matches!(tab.load, DocumentLoad::Opening { unlocking: true }),
+                    },
+                    PdfError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        DocumentLoad::Failed(
+                            "This file could not be found. Check its location and try again."
+                                .into(),
+                        )
                     }
-                    PdfError::PasswordRequired if self.active == Some(index) => {
-                        self.password = Some(id);
-                        ui.set_password_requested(true);
-                        ui.set_status_text("This PDF requires a valid password.".into());
+                    PdfError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                        DocumentLoad::Failed(
+                            "TinyPDF does not have permission to read this file.".into(),
+                        )
                     }
-                    PdfError::PasswordRequired => self.tabs[index].requested = false,
-                    _ => {
-                        let name = title(&self.tabs[index].path);
-                        let show = !self.tabs[index].restoring;
-                        self.close(ui, index, true);
-                        if show {
-                            self.ask(
-                                ui,
-                                Prompt::Message,
-                                &format!("Could not open {name}"),
-                                &error.to_string(),
-                            );
-                        }
-                    }
+                    error => DocumentLoad::Failed(error.to_string()),
+                };
+                if self.active == Some(index) {
+                    self.sync_load(ui);
                 }
             }
             Event::Status(message) => ui.set_status_text(message.into()),
@@ -107,21 +87,24 @@ impl App {
                 if *tab.revision.get(&key.page).unwrap_or(&0) != key.revision {
                     return;
                 }
+                self.failed.remove(&key);
                 if key.thumbnail {
-                    self.thumbnails.insert(key, pixels);
-                    if self.rail_range.contains(&key.page)
+                    if self.requested.contains(&key)
+                        && self.rail_range.contains(&key.page)
                         && self.sidebar_mode == SidebarMode::Thumbnails
                         && key.rotation == tab.reading.rotation
                         && let Some(mut row) = self.rail.row_data(key.page)
-                        && let Some(image) = self.thumbnails.get(key)
                     {
-                        row.thumbnail = image;
-                        self.rail.set_row_data(key.page, row);
+                        self.thumbnails.insert(key, pixels, &[]);
+                        if let Some(image) = self.thumbnails.get(key) {
+                            row.thumbnail = image;
+                            self.rail.set_row_data(key.page, row);
+                        }
                     }
                 } else if let Some(index) = self.plan.iter().position(|item| *item == key)
                     && let Some(mut tile) = self.tiles.row_data(index)
                 {
-                    self.cache.insert(key, pixels);
+                    self.cache.insert(key, pixels, &self.plan);
                     if let Some(bitmap) = self.cache.get(key) {
                         tile.bitmap = bitmap;
                         self.tiles.set_row_data(index, tile);
@@ -132,22 +115,29 @@ impl App {
                             );
                         }
                     }
-                } else if self.requested.contains(&key)
-                    && self.cache.bytes + (pixels.width() * pixels.height() * 4) as usize
-                        <= self.cache.limit
-                {
-                    self.cache.insert(key, pixels);
+                } else if self.requested.contains(&key) {
+                    self.cache.insert(key, pixels, &self.plan);
                 }
             }
             Event::TileFailed(key, error) => {
-                if self.failed.len() >= 256 {
-                    self.failed.clear();
+                let visible = self.plan.contains(&key);
+                if !self.requested.contains(&key) || !(visible || key.thumbnail) {
+                    return;
                 }
-                if self
-                    .active
-                    .is_some_and(|index| self.tabs[index].id == key.tab)
-                {
-                    self.failed.insert(key);
+                let attempts = self.failed.entry(key).or_default();
+                *attempts = attempts.saturating_add(1);
+                if *attempts == 1 && !self.render_retry_timer.running() {
+                    self.render_retry_timer.start(
+                        TimerMode::SingleShot,
+                        Duration::from_millis(120),
+                        || {
+                            with_ui(|app, ui| {
+                                app.render_tab = 0;
+                                app.refresh(ui, true);
+                            });
+                        },
+                    );
+                } else if *attempts == 2 && visible {
                     ui.set_status_text(
                         format!("Could not render page {}: {error}", key.page + 1).into(),
                     );
@@ -173,7 +163,7 @@ impl App {
                             details.push_str(&format!("\n{label}  {value}"));
                         }
                     }
-                    self.ask(ui, Prompt::Message, "Document properties", &details);
+                    self.report_message(ui, "Document properties", &details);
                 }
             }
             Event::Matches(id, token, results, done) => {
@@ -204,6 +194,21 @@ impl App {
                     }
                 }
             }
+            Event::SearchFailed(id, token, error) => {
+                if let Some(index) = self
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == id && tab.search.token == token)
+                {
+                    self.tabs[index].search.failed = true;
+                    if self.active == Some(index) {
+                        self.search_status(ui);
+                        ui.set_status_text(
+                            format!("Could not finish searching this PDF. {error}").into(),
+                        );
+                    }
+                }
+            }
             Event::PageText(id, result) => {
                 if self.active.is_some_and(|index| self.tabs[index].id == id) {
                     let (heading, text) = match result {
@@ -214,7 +219,7 @@ impl App {
                         ),
                         Err(error) => ("Could not extract page text", error),
                     };
-                    self.ask(ui, Prompt::Message, heading, &text);
+                    self.report_message(ui, heading, &text);
                 }
             }
             Event::Recognized(id, result) => {
@@ -225,7 +230,7 @@ impl App {
                         Err(error) => ("Could not extract text", error),
                     };
                     ui.set_status_text("".into());
-                    self.ask(ui, Prompt::Message, heading, &text);
+                    self.report_message(ui, heading, &text);
                 }
             }
             Event::Selected(id, page, selection) => {
@@ -280,22 +285,33 @@ impl App {
             Event::Saved(id, path) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                     tab.path = path;
+                    tab.downloaded = None;
                     tab.dirty = false;
                     tab.saving = false;
+                    tab.save_error = None;
                     self.sync(ui);
                     self.save_later();
-                    ui.set_status_text("Document saved.".into());
+                    if self.active.is_some_and(|index| self.tabs[index].id == id) {
+                        ui.set_status_text("Document saved.".into());
+                    }
                 }
             }
             Event::SaveFailed(id, error) => {
-                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                    tab.saving = false;
+                let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+                    return;
+                };
+                let tab = &mut self.tabs[index];
+                tab.saving = false;
+                let message = format!("Could not save {}. {error}", title(&tab.path));
+                tab.save_error = Some(message.clone());
+                if self.active == Some(index) {
+                    ui.set_status_text(message.into());
+                    self.report_message(ui, "Could not save PDF", &error);
                 }
-                self.ask(ui, Prompt::Message, "Could not save PDF", &error);
             }
             Event::AnnotationText(id, text) => {
                 if self.active.is_some_and(|index| self.tabs[index].id == id) {
-                    self.ask(ui, Prompt::Message, "Annotation", &text);
+                    self.report_message(ui, "Annotation", &text);
                 }
             }
             Event::Clipboard(text) => {

@@ -77,6 +77,22 @@ fn embed_windows_icon() {
     let rc =
         cc::windows_registry::find_tool(&target, "rc.exe").expect("Windows SDK resource compiler");
     let resource = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("tinypdf.res");
+    let version = env!("CARGO_PKG_VERSION");
+    let installer_version = match env!("CARGO_PKG_VERSION_PRE") {
+        "" => version.to_owned(),
+        preview if preview.starts_with("beta.") => {
+            // Keep v1 previews above the MVP and below the eventual Windows 1.0.0 upgrade.
+            let build = preview["beta.".len()..]
+                .parse::<u16>()
+                .expect("numeric beta version");
+            assert_eq!(env!("CARGO_PKG_VERSION_MAJOR"), "1");
+            assert_eq!(env!("CARGO_PKG_VERSION_MINOR"), "0");
+            assert_eq!(env!("CARGO_PKG_VERSION_PATCH"), "0");
+            format!("0.99.{build}")
+        }
+        _ => panic!("Unsupported Windows prerelease version"),
+    };
+    let numbers = format!("{},0", installer_version.replace('.', ","));
     println!("cargo:rerun-if-changed=assets/tinypdf.ico");
     println!("cargo:rerun-if-changed=assets/tinypdf.rc");
     let status = rc
@@ -84,6 +100,8 @@ fn embed_windows_icon() {
         .arg("/nologo")
         .arg("/fo")
         .arg(&resource)
+        .arg(format!("/dTINYPDF_VERSION_NUMBERS={numbers}"))
+        .arg(format!("/dTINYPDF_VERSION_TEXT=\"{version}\""))
         .arg("assets/tinypdf.rc")
         .status()
         .expect("run Windows SDK resource compiler");

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="TinyPDF" Language="1033" Version="$(var.Version)"
+           Manufacturer="ExpressAI-SWE" UpgradeCode="B49C2880-A470-4DDC-B8FC-D537C31B17C9">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" />
+    <Condition Message="TinyPDF installs for the current Windows user.">NOT ALLUSERS</Condition>
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer TinyPDF is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="TinyPdfIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="TinyPdfIcon" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="TinyPDF MSI">
+          <Component Id="ReaderFiles" Guid="F3255130-9539-49E8-863D-EEA9B3C060C5" Win64="yes">
+            <File Id="ReaderExe" Source="$(var.Payload)\tinypdf.exe" />
+            <File Source="$(var.Payload)\pdfium.dll" />
+            <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\ExpressAI-SWE\TinyPDF MSI" Name="ReaderFiles"
+                           Type="integer" Value="1" KeyPath="yes" />
+            <RegistryKey Root="HKCU" Key="Software\ExpressAI-SWE\TinyPDF MSI\Capabilities">
+              <RegistryValue Name="ApplicationName" Value="TinyPDF (MSI)" Type="string" />
+              <RegistryValue Name="ApplicationDescription" Value="Read and annotate PDF documents with TinyPDF." Type="string" />
+              <RegistryValue Name="ApplicationIcon" Value="[#ReaderExe],0" Type="string" />
+              <RegistryKey Key="FileAssociations">
+                <RegistryValue Name=".pdf" Value="TinyPDF.MSI.PDF" Type="string" />
+              </RegistryKey>
+            </RegistryKey>
+            <RegistryValue Root="HKCU" Key="Software\RegisteredApplications" Name="TinyPDF (MSI)"
+                           Value="Software\ExpressAI-SWE\TinyPDF MSI\Capabilities" Type="string" />
+            <RegistryKey Root="HKCU" Key="Software\Classes\TinyPDF.MSI.PDF">
+              <RegistryValue Value="PDF document" Type="string" />
+              <RegistryKey Key="DefaultIcon">
+                <RegistryValue Value="[#ReaderExe],0" Type="string" />
+              </RegistryKey>
+              <RegistryKey Key="shell\open\command">
+                <RegistryValue Value="&quot;[#ReaderExe]&quot; &quot;%1&quot;" Type="string" />
+              </RegistryKey>
+            </RegistryKey>
+            <RegistryValue Root="HKCU" Key="Software\Classes\.pdf\OpenWithProgids"
+                           Name="TinyPDF.MSI.PDF" Value="" Type="string" />
+          </Component>
+          <?include $(var.Notices) ?>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="ReaderShortcut" Guid="7B36596B-AF21-485A-A5B0-2561B532969C" Win64="yes">
+          <Shortcut Id="StartMenu" Name="TinyPDF (MSI)" Target="[INSTALLFOLDER]tinypdf.exe"
+                    WorkingDirectory="INSTALLFOLDER" Icon="TinyPdfIcon" />
+          <RegistryValue Root="HKCU" Key="Software\ExpressAI-SWE\TinyPDF MSI" Name="ReaderShortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+    <Feature Id="Reader" Title="TinyPDF" Level="1">
+      <ComponentRef Id="ReaderFiles" />
+      <ComponentRef Id="ReaderShortcut" />
+      <ComponentRef Id="PdfiumNotices" />
+      <ComponentRef Id="PdfiumLicenses" />
+    </Feature>
+  </Product>
+</Wix>

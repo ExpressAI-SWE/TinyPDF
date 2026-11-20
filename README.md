@@ -12,7 +12,11 @@ cargo build --release --locked
 cargo test --locked
 ```
 
-Use **+** or **Ctrl+T** to open a home tab. Open or drop a PDF there to fill it. **Ctrl+Tab** and **Ctrl+Shift+Tab** switch tabs. Each PDF keeps its own reading position. The toolbar provides page navigation, Find, zoom, page views and annotations. Use **View** for page modes and fit options. Save, Print, Rotate and OCR are in **More**.
+Use **+** or **Ctrl+T** to open a home tab. Open or drop a PDF there to fill it. **Ctrl+Tab** and **Ctrl+Shift+Tab** switch tabs. Each PDF keeps its own reading position. Use the toolbar arrows or enter a page number to navigate. Use **View** for page modes and fit options. Save, Print, Rotate and OCR are in **More**.
+
+Use **Open PDF link** or **Ctrl+L** to open a direct HTTP or HTTPS link. TinyPDF downloads up to 128 MiB in the background. Local PDFs work offline. Use **Save As** to keep a permanent copy of a downloaded PDF.
+
+On Windows, install TinyPDF and open **Settings > Windows Default apps** in TinyPDF. Search for TinyPDF in Windows Settings and select it for `.pdf`. Windows keeps your existing selection until you change it.
 
 Open **Settings** to change the interface theme, choose whether to restore tabs, and set the default layout and fit for PDFs TinyPDF has not seen before. Previously opened files use their saved positions and view settings. **Memory saver** reduces the raster cache reserve and skips nearby-page prefetch. Visible pages still render at their usual resolution. PDF page colors stay as rendered by PDFium.
 
@@ -20,22 +24,22 @@ Use **More > View page text** to open selectable native PDF text in a text field
 
 ## Package
 
-`./scripts/package.ps1` builds the host target and writes a portable archive to `dist/`. Use `-Binary` to package an existing release executable. The archive already includes PDFium and its notices. Extract it before starting TinyPDF.
+`./scripts/package.ps1` builds the host target and writes a portable archive to `dist/`. Use `-Binary` to package an existing release executable. The archive includes PDFium and its notices. Extract it before starting TinyPDF. Use a fresh output directory for each build.
 
 ```powershell
-./scripts/package.ps1 -Binary ./target/release/tinypdf.exe
-./scripts/package.ps1 -Binary ./target/release/tinypdf.exe -MakeNsi "C:/path/to/makensis.exe"
+$releaseDir = './dist/1.0.0-beta.1-win-x64-local'
+./scripts/package.ps1 -Target x86_64-pc-windows-msvc -Binary ./target/release/tinypdf.exe `
+  -MakeNsi 'C:/path/to/makensis.exe' -OutputDirectory $releaseDir
+$portable = Join-Path $releaseDir 'TinyPDF-win-x64.zip'
+./scripts/package-msi.ps1 -PortableZip $portable -WixBin 'C:/path/to/wix-3.14.1'
+./scripts/package-msix.ps1 -PortableZip $portable -MakeAppx 'C:/path/to/makeappx.exe' -Standalone
 ```
 
-Build a Windows x64 MSIX bundle from the portable ZIP with the Windows SDK:
+Both `TinyPDF-Setup.exe` and `TinyPDF.msi` install per user and run offline. NSIS 3.13 adds a Start Menu shortcut, offers a desktop shortcut, and registers TinyPDF under **Open with**. Use `/S` for unattended NSIS installation. Close TinyPDF before upgrading. The MSI creates a **TinyPDF (MSI)** Start Menu shortcut. Use `msiexec.exe /i TinyPDF.msi /qn /norestart` for unattended MSI installation. Use the entry in **Installed apps** to remove either package.
 
-```powershell
-./scripts/package-msix.ps1 -PortableZip ./dist/TinyPDF-win-x64.zip -MakeAppx "C:/path/to/makeappx.exe"
-```
+The Windows SDK builds the standalone `TinyPDF.msix`. Omit `-Standalone` to build the x64 bundle. Supply `-Publisher`, `-SignTool`, and `-CertificateThumbprint` to sign with a trusted certificate whose subject exactly matches the package publisher. Verify the signature with `signtool verify /pa TinyPDF.msix`, then use App Installer or `Add-AppxPackage -Path ./TinyPDF.msix`. Keep the identity and publisher consistent for upgrades. [Microsoft MSIX signing guide](https://learn.microsoft.com/windows/msix/package/sign-msix-package-guide)
 
-The MSIX output is unsigned by default. For installation, supply a trusted signing certificate whose subject matches `-Publisher`, and pass `-SignTool` and `-CertificateThumbprint`. The packaging script does not change the machine's trust settings.
-
-The optional Windows installer uses NSIS 3.13. It installs for the current Windows user and adds TinyPDF to **Open with** for PDFs. Windows keeps the current default PDF app. The packager reports executable, library, installed payload, and archive sizes and produces SHA-256 checksums for the finished artifacts. The current local packages are unsigned.
+The scripts report SHA-256 hashes for the packages they build. See the [release report](RELEASE.md) for validation results and remaining release gates.
 
 `-Target` accepts Windows MSVC, Linux GNU, and macOS Rust targets for x64 and ARM64. Build each target with its native toolchain. Linux archives contain a portable executable. macOS archives contain an ad-hoc signed app bundle when packaged on macOS. Native behavior on each target requires testing on that platform.
 
@@ -57,5 +61,3 @@ Run the benchmark from a desktop PowerShell session with access to Windows proce
 ```
 
 Run each executable against the same local PDF and repeat on the same machine. Window startup runs from process launch to the first main window handle. TinyPDF also records elapsed time from its Rust entry point to publishing the first PDF tile to the interface. The stationary sample begins after the warmup and can still include document loading. Memory and CPU include the process tree. Working set counts shared pages in every process that uses them. GPU dedicated and shared memory come from Windows counters when available. The generated 501-page fixture exercises page count and text. The public USGS Circular 1296 download is a 112,181,765-byte real-world workload. [USGS Circular 1296](https://pubs.usgs.gov/circ/2006/1296/)
-=======
-A small native .pdf viewer that  minimizes on bloat and gives high performance

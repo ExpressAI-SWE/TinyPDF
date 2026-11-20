@@ -2,6 +2,7 @@
 
 mod app;
 mod layout;
+mod links;
 mod pdf;
 mod platform;
 mod storage;
@@ -18,6 +19,10 @@ fn main() -> std::process::ExitCode {
     let started = Instant::now();
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
+    #[cfg(windows)]
+    let use_dialog = first
+        .as_deref()
+        .is_none_or(|arg| arg != "--benchmark" && arg != "--timing");
     let result = match first.as_deref().and_then(|arg| arg.to_str()) {
         Some("--benchmark") => match args.next() {
             Some(path) if args.next().is_none() => benchmark(Path::new(&path)),
@@ -36,6 +41,14 @@ fn main() -> std::process::ExitCode {
     };
     if let Err(error) = result {
         eprintln!("TinyPDF: {error}");
+        #[cfg(windows)]
+        if use_dialog {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("TinyPDF could not start")
+                .set_description(error.to_string())
+                .show();
+        }
         return std::process::ExitCode::FAILURE;
     }
     std::process::ExitCode::SUCCESS

@@ -37,6 +37,9 @@ impl App {
             return;
         }
         let page = page.min(tab.sizes.len() - 1);
+        if page != tab.reading.page {
+            self.scroll_forward = page > tab.reading.page;
+        }
         let rebuild = tab.reading.mode != Mode::Continuous && page != tab.reading.page;
         tab.reading.page = page;
         tab.reading.fraction = 0.;
@@ -89,6 +92,9 @@ impl App {
                 self.step(ui, if y > 0. { -1 } else { 1 });
             }
         } else {
+            if self.scroll.1 != old_scroll.1 {
+                self.scroll_forward = self.scroll.1 > old_scroll.1;
+            }
             self.scroll_changed(ui, index);
         }
     }
@@ -97,8 +103,12 @@ impl App {
         if let Some(index) = self.active
             && fraction.is_finite()
         {
-            self.scroll.1 = fraction.clamp(0., 1.) * (self.layout.height - self.viewport.1).max(0.);
-            self.scroll_changed(ui, index);
+            let top = fraction.clamp(0., 1.) * (self.layout.height - self.viewport.1).max(0.);
+            if top != self.scroll.1 {
+                self.scroll_forward = top > self.scroll.1;
+                self.scroll.1 = top;
+                self.scroll_changed(ui, index);
+            }
         }
     }
 
@@ -237,7 +247,7 @@ impl App {
         let mut slots = Vec::new();
         let mut plan = Vec::new();
         let mut tiles = Vec::new();
-        let visible = if tab.opened {
+        let visible = if tab.opened() {
             self.layout.visible(self.scroll.1, self.viewport.1)
         } else {
             &[]
@@ -307,7 +317,10 @@ impl App {
         } else {
             super::RASTER_CACHE_BYTES
         };
-        self.cache.set_limit(view_bytes.max(reserve));
+        self.cache.set_limit(view_bytes.max(reserve), &plan);
+        self.failed.retain(|key, _| {
+            plan.contains(key) || (key.thumbnail && self.rail_range.contains(&key.page))
+        });
         let mut requested = Vec::new();
         for (&key, tile) in plan.iter().zip(&mut tiles) {
             if let Some(image) = self.cache.get(key) {
@@ -315,7 +328,7 @@ impl App {
             } else {
                 // A failed replacement should still leave the last committed tile visible.
                 tile.bitmap = self.cache.previous_revision(key).unwrap_or_default();
-                if !self.failed.contains(&key) {
+                if self.failed.get(&key).copied().unwrap_or(0) < 2 {
                     requested.push(key);
                 }
             }
@@ -342,15 +355,19 @@ impl App {
         } else {
             self.pages.set_vec(slots);
         }
-        // Warm one tile on the next and previous pages after the visible work.
-        // Prefetch uses spare cache capacity and never evicts a visible tile.
-        if !self.settings.memory_saver
-            && tab.reading.mode == Mode::Continuous
-            && self.cache.limit >= view_bytes + 4 * 1024 * 1024
+        let visible_jobs = requested.len();
+        let mut prefetch_bytes = self.cache.limit - view_bytes;
+        // Warm the entering edge in the current direction first.
+        if !self.settings.memory_saver && tab.reading.mode == Mode::Continuous && prefetch_bytes > 0
         {
             let next = visible.last().map(|item| item.page + 1);
             let previous = visible.first().and_then(|item| item.page.checked_sub(1));
-            for index in [next, previous].into_iter().flatten() {
+            let mut neighbors = [(next, false), (previous, true)];
+            if !self.scroll_forward {
+                neighbors.reverse();
+            }
+            for (index, entering_from_bottom) in neighbors {
+                let Some(index) = index else { continue };
                 if let Some(item) = self.layout.pages.get(index) {
                     let (width, height) =
                         raster_size(item.width * scale, item.height * scale, MAX_TILE_AXIS);
@@ -368,11 +385,18 @@ impl App {
                         full_width: width,
                         full_height: height,
                         x,
-                        y: 0,
+                        y: if entering_from_bottom {
+                            (height - 1) / TILE * TILE
+                        } else {
+                            0
+                        },
                         thumbnail: false,
                     };
-                    if !self.cache.contains(key) && !self.failed.contains(&key) {
+                    let region = key.region();
+                    let bytes = (region.width * region.height * 4) as usize;
+                    if bytes <= prefetch_bytes && !self.cache.contains(key) {
                         requested.push(key);
+                        prefetch_bytes -= bytes;
                     }
                 }
             }
@@ -406,17 +430,22 @@ impl App {
                         item.thumbnail = image;
                         self.rail.set_row_data(page, item);
                     }
-                } else if !self.failed.contains(&key) {
+                } else if self.failed.get(&key).copied().unwrap_or(0) < 2 {
                     requested.push(key);
                 }
             }
         }
         self.plan = plan;
         let id = tab.id;
-        if schedule && (self.render_tab != id || requested != self.requested) {
+        if schedule
+            && (self.render_tab != id
+                || requested != self.requested
+                || self.render_visible != visible_jobs)
+        {
             self.render_tab = id;
+            self.render_visible = visible_jobs;
             self.requested = requested.clone();
-            self.worker.render(id, requested);
+            self.worker.render(id, requested, visible_jobs);
         }
     }
 

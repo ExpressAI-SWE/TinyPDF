@@ -92,7 +92,7 @@ impl Default for Settings {
             active: None,
             recent: Vec::new(),
             sidebar: false,
-            dark: false,
+            dark: true,
             restore_session: true,
             default_zoom: Zoom::FitPage,
             default_mode: Mode::Continuous,

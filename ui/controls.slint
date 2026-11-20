@@ -13,6 +13,11 @@ export global ReaderColors {
     out property <color> accent-ink: #ffffff;
     out property <color> selected: dark ? #304d69 : #dceaf7;
     out property <color> focus: dark ? #8fc6fa : #1f6aaa;
+    out property <color> page-pending: dark ? #41464f : #dfe6ed;
+    out property <color> button: dark ? #30353d : #f5f8fb;
+    out property <color> button-pressed: dark ? #252d38 : #cadcf0;
+    out property <color> accent-hover: dark ? #397bb2 : #2c6597;
+    out property <color> accent-pressed: dark ? #27577f : #1b4264;
 }
 
 export component ToolButton inherits Rectangle {
@@ -20,6 +25,7 @@ export component ToolButton inherits Rectangle {
     in property <string> name: label;
     in property <bool> selected;
     in property <bool> primary;
+    in property <bool> quiet;
     in property <bool> usable: true;
     in property <length> control-height: 36px;
     in property <TextHorizontalAlignment> text-align: center;
@@ -27,15 +33,20 @@ export component ToolButton inherits Rectangle {
 
     min-width: 34px;
     preferred-width: caption.preferred-width + 20px;
+    min-height: min(control-height, 34px);
     preferred-height: control-height;
     horizontal-stretch: 0;
-    border-radius: 6px;
+    border-radius: 8px;
     border-width: 1px;
-    border-color: keyboard.has-focus ? ReaderColors.focus : root.selected ? ReaderColors.border : transparent;
-    background: !root.usable ? transparent : root.primary
-        ? (touch.pressed ? #183d5d : touch.has-hover ? #204a6d : ReaderColors.accent)
-        : touch.pressed ? ReaderColors.raised : root.selected ? ReaderColors.selected
-        : touch.has-hover ? ReaderColors.raised : transparent;
+    border-color: keyboard.has-focus && root.usable ? ReaderColors.focus
+        : (root.primary || (root.quiet && !root.selected)) ? transparent
+        : !root.usable ? ReaderColors.border.transparentize(0.5) : ReaderColors.border;
+    background: !root.usable ? transparent
+        : root.primary ? (touch.pressed ? ReaderColors.accent-pressed : touch.has-hover ? ReaderColors.accent-hover : ReaderColors.accent)
+        : touch.pressed ? ReaderColors.button-pressed
+        : touch.has-hover ? ReaderColors.raised
+        : root.selected ? ReaderColors.selected
+        : root.quiet ? transparent : ReaderColors.button;
 
     accessible-role: button;
     accessible-label: root.name;
