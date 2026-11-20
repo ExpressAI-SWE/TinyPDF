@@ -67,17 +67,24 @@ jobs:
           ./scripts/bench-pdfium.ps1 -Executable ./target/release/tinypdf.exe -Pdf ./target/long.pdf -Runs 10 |
             Set-Content target/installer-test/long.json
       - name: Build candidate packages with verified tools
+        id: packages
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: ./scripts/build-windows-candidate.ps1 -Binary ./target/release/tinypdf.exe -OutputDirectory ./dist/candidate
-      - name: Install and remove the three candidates independently
-        if: github.event_name != 'pull_request'
+      - name: Validate NSIS install and removal
+        if: '!cancelled() && steps.packages.outcome == ''success'''
+        shell: pwsh
+        run: ./scripts/test-windows-installers.ps1 -PackageDirectory ./dist/candidate -Pdf ./target/short.pdf -Installer NSIS
+      - name: Validate MSI install and removal
+        if: '!cancelled() && steps.packages.outcome == ''success'''
+        shell: pwsh
+        run: ./scripts/test-windows-installers.ps1 -PackageDirectory ./dist/candidate -Pdf ./target/short.pdf -Installer MSI
+      - name: Validate MSIX with a disposable test signature
+        if: '!cancelled() && steps.packages.outcome == ''success'''
         shell: pwsh
         run: |
           $sdk = Get-Content target/windows-packaging/sdk.txt
-          foreach ($installer in 'NSIS', 'MSI', 'MSIX') {
-            ./scripts/test-windows-installers.ps1 -PackageDirectory ./dist/candidate -Pdf ./target/short.pdf -Installer $installer -SignTool (Join-Path $sdk 'signtool.exe')
-          }
+          ./scripts/test-windows-installers.ps1 -PackageDirectory ./dist/candidate -Pdf ./target/short.pdf -Installer MSIX -SignTool (Join-Path $sdk 'signtool.exe')
       - name: Upload diagnostics
         if: always() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

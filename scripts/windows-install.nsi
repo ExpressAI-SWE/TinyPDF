@@ -54,9 +54,11 @@ Section "TinyPDF (required)"
     WriteRegDWORD HKCU "${UNINSTALL}" "NoModify" 1
     WriteRegDWORD HKCU "${UNINSTALL}" "NoRepair" 1
 
-    WriteRegStr HKCU "${CLASSES}${PROGID}" "" "PDF document"
-    WriteRegStr HKCU "${CLASSES}${PROGID}\DefaultIcon" "" "$INSTDIR\tinypdf.exe,0"
-    WriteRegStr HKCU "${CLASSES}${PROGID}\shell\open\command" "" '"$INSTDIR\tinypdf.exe" "%1"'
+    ; Remove the malformed class key left by older TinyPDF installers.
+    DeleteRegKey HKCU "${CLASSES}${PROGID}"
+    WriteRegStr HKCU "${CLASSES}\${PROGID}" "" "PDF document"
+    WriteRegStr HKCU "${CLASSES}\${PROGID}\DefaultIcon" "" "$INSTDIR\tinypdf.exe,0"
+    WriteRegStr HKCU "${CLASSES}\${PROGID}\shell\open\command" "" '"$INSTDIR\tinypdf.exe" "%1"'
     WriteRegStr HKCU "${CLASSES}\.pdf\OpenWithProgids" "${PROGID}" ""
     WriteRegStr HKCU "${CAPABILITIES}" "ApplicationName" "TinyPDF"
     WriteRegStr HKCU "${CAPABILITIES}" "ApplicationDescription" "Read and annotate PDF documents with TinyPDF."
@@ -78,7 +80,7 @@ Section "Uninstall"
     StrCmp $0 "1" 0 +2
     Delete "$DESKTOP\TinyPDF.lnk"
     DeleteRegValue HKCU "${CLASSES}\.pdf\OpenWithProgids" "${PROGID}"
-    DeleteRegKey HKCU "${CLASSES}${PROGID}"
+    DeleteRegKey HKCU "${CLASSES}\${PROGID}"
     DeleteRegValue HKCU "Software\RegisteredApplications" "TinyPDF"
     DeleteRegKey HKCU "${CAPABILITIES}"
     DeleteRegKey /ifempty HKCU "Software\ExpressAI-SWE\TinyPDF"
