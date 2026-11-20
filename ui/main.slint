@@ -1,0 +1,1392 @@
+import { AboutSlint, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { ReaderColors, ToolButton, Entry, ToolbarDivider, FileMark } from "controls.slint";
+import { AnnotationBar } from "annotations.slint";
+import { DocumentScrollbar } from "scrollbar.slint";
+
+export struct PageSlot {
+    page: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    overlay: image,
+}
+
+export struct PageTile {
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    bitmap: image,
+}
+
+export struct TabItem { title: string, dirty: bool }
+export struct SidebarItem { label: string, page: int, thumbnail: image }
+
+export component MainWindow inherits Window {
+    title: "TinyPDF";
+    icon: @image-url("../assets/tinypdf.png");
+    background: ReaderColors.background;
+    default-font-size: 13px;
+    min-width: 700px;
+    min-height: 432px;
+    preferred-width: 1120px;
+    preferred-height: 690px;
+
+    in property <[PageSlot]> pages;
+    in property <[PageTile]> tiles;
+    in property <[TabItem]> tabs;
+    in property <[SidebarItem]> sidebar-items;
+    in property <[SidebarItem]> recent-items;
+    in property <int> active-tab: -1;
+    in property <int> page-number: 1;
+    in property <int> page-count;
+    in property <string> zoom-label: "100%";
+    in property <float> zoom-percent: 100;
+    in property <float> scroll-progress;
+    in property <float> scroll-visible-fraction: 1;
+    in property <string> status-text;
+    in property <bool> document-open;
+    in property <bool> dark-mode;
+    in property <bool> restore-session;
+    in property <bool> default-fit-width;
+    in property <string> default-reading-mode;
+    in property <bool> memory-saver;
+    in property <bool> ocr-available;
+    in property <bool> fullscreen;
+    in property <bool> controls-visible;
+    in property <bool> print-available;
+    in property <bool> search-open;
+    in property <string> search-text;
+    in property <string> search-status;
+    in property <bool> sidebar-open;
+    in property <string> sidebar-mode: "thumbnails";
+    in property <string> annotation-tool: "select";
+    in property <string> reading-mode: "continuous";
+    in property <string> pen-color-value: "#e65761";
+    in property <float> pen-width-value: 3;
+    in property <bool> password-requested;
+    in property <string> input-request;
+    in property <string> input-title;
+    in property <string> input-value;
+
+    out property <float> viewport-width: document-view.width / 1px;
+    out property <float> viewport-height: document-view.height / 1px;
+    callback command(string);
+    callback go-to-page(int);
+    callback select-tab(int);
+    callback close-tab(int);
+    callback open-recent(int);
+    callback find(string);
+    callback unlock(string);
+    callback input-submit(string);
+    callback zoom-to(float);
+    callback pen-color(string);
+    callback pen-width(float);
+    callback wheel(float, float, bool);
+    callback scroll-to(float);
+    callback page-pointer(int, string, float, float);
+    callback viewport-changed(float, float);
+    callback sidebar-visible(int, int);
+    callback can-drop-files(data-transfer) -> bool;
+    callback drop-files(data-transfer);
+
+    property <bool> annotating;
+    property <bool> showing-sidebar: root.document-open && root.sidebar-open && !root.fullscreen;
+    property <bool> modal-open: root.password-requested || root.input-request != "";
+    property <bool> text-prompt: root.input-request != "message" && root.input-request != "metadata" && root.input-request != "confirm";
+    property <bool> drawing: root.annotation-tool != "" && root.annotation-tool != "select";
+    property <length> header-height: root.fullscreen ? 0px : !root.document-open ? 47px : root.annotating ? 180px : 94px;
+    property <length> footer-height: root.fullscreen ? 0px : 25px;
+    property <length> rail-width: root.showing-sidebar ? 232px : 0px;
+    property <length> thumbnail-row-height: 151px;
+    property <int> first-thumbnail: max(0, floor(-rail-list.content-y / root.thumbnail-row-height));
+    property <int> past-last-thumbnail: min(root.sidebar-items.length,
+        ceil((rail-list.height - rail-list.content-y) / root.thumbnail-row-height));
+    property <length> touch-x;
+    property <length> touch-y;
+    property <length> touch-start-x;
+    property <length> touch-start-y;
+    property <bool> touch-panning;
+    property <bool> touch-swipe;
+    property <bool> touch-moving;
+    property <bool> pinch-ending;
+    property <bool> fits-across: root.pages.length > 0 && root.pages[root.pages.length - 1].x
+        + root.pages[root.pages.length - 1].width - root.pages[0].x <= root.viewport-width;
+    property <length> context-x;
+    property <length> context-y;
+    property <length> tab-step: 162px;
+    property <bool> tab-overflow: root.tabs.length * root.tab-step > tabs-strip.width;
+    property <{ w: length, count: int }> tab-viewport: { w: tabs-strip.width, count: root.tabs.length };
+
+    property <{ w: float, h: float }> viewport-size: { w: root.viewport-width, h: root.viewport-height };
+
+    function reveal-active-tab() {
+        let left = max(0, root.active-tab) * root.tab-step;
+        let right = left + root.tab-step;
+        tabs-strip.content-x = clamp(
+            clamp(tabs-strip.content-x, -left, max(-left, tabs-strip.width - right)),
+            min(0px, tabs-strip.width - tabs-strip.content-width), 0px);
+    }
+
+    function update-thumbnails() {
+        if (root.showing-sidebar && root.sidebar-mode == "thumbnails" && root.past-last-thumbnail > root.first-thumbnail) {
+            root.sidebar-visible(root.first-thumbnail, root.past-last-thumbnail);
+        }
+    }
+
+    function reveal() {
+        if (root.fullscreen && !root.modal-open) {
+            root.command("reveal-controls");
+        }
+    }
+
+    function toggle-annotations() {
+        root.annotating = !root.annotating;
+        if (!root.annotating && root.drawing) {
+            root.command("tool-select");
+        }
+        root.reveal();
+    }
+
+    function cancel-modal() {
+        root.command(root.password-requested ? "cancel-password" : "input-cancel");
+    }
+
+    function submit-modal() {
+        if (root.password-requested) {
+            root.unlock(prompt-field.text);
+            prompt-field.text = "";
+        } else {
+            root.input-submit(root.text-prompt ? prompt-field.text : "");
+        }
+    }
+
+    function focus-modal() {
+        if (root.modal-open) {
+            prompt-field.text = root.password-requested ? "" : root.input-value;
+            if (root.password-requested || root.text-prompt) {
+                prompt-field.focus();
+                prompt-field.select-all();
+            } else {
+                prompt-scope.focus();
+            }
+        } else {
+            prompt-field.text = "";
+            keyboard.focus();
+        }
+    }
+
+    function pan-start(x: length, y: length) {
+        root.touch-panning = true;
+        root.touch-x = x;
+        root.touch-y = y;
+        root.touch-start-x = x;
+        root.touch-start-y = y;
+        root.touch-swipe = false;
+        root.touch-moving = false;
+    }
+
+    function pan-move(x: length, y: length) {
+        if (!root.touch-panning) { return; }
+        if (!root.touch-moving) {
+            if (abs(x - root.touch-start-x) < 4px && abs(y - root.touch-start-y) < 4px) { return; }
+            root.touch-moving = true;
+        }
+        if (!root.touch-swipe) {
+            let dx = x - root.touch-start-x;
+            let dy = y - root.touch-start-y;
+            let paged = root.reading-mode != "continuous";
+            let horizontal-swipe = paged && root.fits-across && abs(dx) > 48px && abs(dy) < 32px;
+            let vertical-swipe = paged && root.scroll-visible-fraction >= 1 && abs(dy) > 48px && abs(dx) < 32px;
+            if (horizontal-swipe || vertical-swipe) {
+                root.command((horizontal-swipe ? dx : dy) < 0px ? "next-page" : "previous-page");
+                root.touch-swipe = true;
+            } else {
+                root.wheel((x - root.touch-x) / 1px, paged && root.scroll-visible-fraction >= 1 ? 0 : (y - root.touch-y) / 1px, false);
+            }
+        }
+        root.touch-x = x;
+        root.touch-y = y;
+        root.reveal();
+    }
+
+    function apply-theme() {
+        ReaderColors.dark = root.dark-mode;
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    init => { root.apply-theme(); keyboard.focus(); }
+    changed dark-mode => { root.apply-theme(); }
+    changed viewport-size => { root.viewport-changed(root.viewport-size.w, root.viewport-size.h); }
+    changed first-thumbnail => { root.update-thumbnails(); }
+    changed past-last-thumbnail => { root.update-thumbnails(); }
+    changed showing-sidebar => {
+        if (root.showing-sidebar && root.sidebar-mode == "thumbnails") {
+            rail-list.ensure-row-visible(root.page-number - 1, ScrollBehavior.instant);
+        }
+        root.update-thumbnails();
+    }
+    changed sidebar-mode => {
+        rail-list.content-y = 0px;
+        if (root.sidebar-mode == "thumbnails") {
+            rail-list.ensure-row-visible(root.page-number - 1, ScrollBehavior.instant);
+        }
+        root.update-thumbnails();
+    }
+    changed password-requested => { root.focus-modal(); }
+    changed input-request => { root.focus-modal(); }
+    changed input-title => { root.focus-modal(); }
+    changed fullscreen => { keyboard.focus(); }
+    changed tab-viewport => { root.reveal-active-tab(); }
+    changed active-tab => {
+        page-field.text = "" + root.page-number;
+        root.reveal-active-tab();
+        root.annotating = false;
+    }
+    changed page-number => { page-field.text = "" + root.page-number; }
+    changed annotation-tool => { if (root.drawing) { root.annotating = true; } }
+    changed search-open => {
+        if (root.search-open) { search-field.focus(); search-field.select-all(); }
+        else { keyboard.focus(); }
+    }
+    changed search-text => {
+        if (search-field.text != root.search-text) { search-field.text = root.search-text; }
+    }
+
+    // Slint may resume the last finger as a new press after a pinch.
+    Timer {
+        interval: 1ms;
+        running: root.pinch-ending;
+        triggered => { root.pinch-ending = false; }
+    }
+
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if (root.modal-open) {
+                if (event.text == Key.Escape) {
+                    root.cancel-modal();
+                    return accept;
+                }
+                return reject;
+            }
+            if (event.text == Key.F11 || (event.text == Key.Escape && root.fullscreen)) {
+                if (root.document-open) { root.command("toggle-fullscreen"); }
+                return accept;
+            }
+            if (event.text == Key.Escape && root.search-open) {
+                root.command("toggle-search");
+                return accept;
+            }
+            if (event.modifiers.control) {
+                if (event.text == "t" || event.text == "T") { root.command("new-tab"); return accept; }
+                if (event.text == "o" || event.text == "O") {
+                    root.command("open");
+                    return accept;
+                }
+                if (event.text == "w" || event.text == "W") { root.command("close-current-tab"); return accept; }
+                if (event.text == Key.Tab || event.text == Key.Backtab) {
+                    root.command(event.modifiers.shift ? "previous-tab" : "next-tab"); return accept;
+                }
+                if (!root.document-open) { return reject; }
+                if (event.text == "f" || event.text == "F") { root.command("toggle-search"); return accept; }
+                if (event.text == "s" || event.text == "S") {
+                    root.command(event.modifiers.shift ? "save-as" : "save");
+                    return accept;
+                }
+                if ((event.text == "p" || event.text == "P") && root.print-available) {
+                    root.command("print");
+                    return accept;
+                }
+                if (event.text == "c" || event.text == "C") { root.command("copy"); return accept; }
+                if (event.text == "z" || event.text == "Z") {
+                    root.command(event.modifiers.shift ? "redo" : "undo");
+                    return accept;
+                }
+                if (event.text == "y" || event.text == "Y") { root.command("redo"); return accept; }
+                if (event.text == "+" || event.text == "=") { root.command("zoom-in"); return accept; }
+                if (event.text == "-" || event.text == "−") { root.command("zoom-out"); return accept; }
+                if (event.text == "0") { root.zoom-to(100); return accept; }
+                return reject;
+            }
+            if (!root.document-open || event.modifiers.alt) { return reject; }
+            if (event.text == Key.Home) { root.command("first-page"); return accept; }
+            if (event.text == Key.End) { root.command("last-page"); return accept; }
+            if (event.text == Key.LeftArrow) { root.command("previous-page"); return accept; }
+            if (event.text == Key.RightArrow) { root.command("next-page"); return accept; }
+            if (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                root.wheel(0, event.text == Key.UpArrow ? 58 : -58, false);
+                return accept;
+            }
+            if (event.text == Key.PageUp || event.text == Key.PageDown || event.text == " ") {
+                if (root.reading-mode == "continuous") {
+                    root.wheel(0, root.viewport-height * 0.89 * (event.text == Key.PageUp || event.modifiers.shift ? 1 : -1), false);
+                } else {
+                    root.command(event.text == Key.PageUp || event.modifiers.shift ? "previous-page" : "next-page");
+                }
+                return accept;
+            }
+            if (event.text == Key.F3) {
+                root.command(event.modifiers.shift ? "find-previous" : "find-next");
+                return accept;
+            }
+            return reject;
+        }
+
+        rail := Rectangle {
+            visible: root.showing-sidebar;
+            x: 0;
+            y: root.header-height;
+            width: root.rail-width;
+            height: parent.height - root.header-height - root.footer-height;
+            background: ReaderColors.header;
+            accessible-role: navigation;
+            accessible-label: "Document navigation";
+
+            HorizontalLayout {
+                x: 8px;
+                y: 6px;
+                width: parent.width - 16px;
+                height: 36px;
+                spacing: 2px;
+                ToolButton {
+                    label: "Pages";
+                    name: "Page thumbnails";
+                    selected: root.sidebar-mode == "thumbnails";
+                    activated => { root.command("thumbnails"); }
+                }
+                ToolButton {
+                    label: "Outline";
+                    name: "Document outline";
+                    selected: root.sidebar-mode == "outline";
+                    activated => { root.command("outline"); }
+                }
+                ToolButton {
+                    label: "Saved";
+                    name: "Bookmarks";
+                    selected: root.sidebar-mode == "bookmarks";
+                    activated => { root.command("bookmarks"); }
+                }
+            }
+
+            rail-list := ListView {
+                visible: root.sidebar-items.length > 0;
+                x: 8px;
+                y: 49px;
+                width: parent.width - 18px;
+                height: max(0px, parent.height - 55px);
+                horizontal-scrollbar-policy: always-off;
+                accessible-label: "Document " + root.sidebar-mode;
+
+                for item in root.sidebar-items: ToolButton {
+                    height: root.sidebar-mode == "thumbnails" ? root.thumbnail-row-height : 40px;
+                    width: rail-list.visible-width;
+                    label: root.sidebar-mode == "thumbnails" ? "" : item.label;
+                    name: item.label;
+                    text-align: root.sidebar-mode == "thumbnails" ? TextHorizontalAlignment.center : TextHorizontalAlignment.left;
+                    selected: item.page + 1 == root.page-number;
+                    activated => { root.go-to-page(item.page + 1); }
+
+                    if root.sidebar-mode == "thumbnails": Rectangle {
+                        width: 99px;
+                        height: 116px;
+                        y: 8px;
+                        background: ReaderColors.raised;
+                        border-radius: 2px;
+                        if item.thumbnail.width > 0: Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: item.thumbnail;
+                            image-fit: contain;
+                            accessible-role: none;
+                        }
+                    }
+                    if root.sidebar-mode == "thumbnails": Text {
+                        y: parent.height - 24px;
+                        text: item.label;
+                        color: ReaderColors.muted;
+                        font-size: 12px;
+                        accessible-role: none;
+                    }
+                }
+            }
+
+            if root.sidebar-items.length == 0: Text {
+                x: 16px;
+                y: 61px;
+                width: parent.width - 32px;
+                text: root.sidebar-mode == "bookmarks" ? "No bookmarks yet." : root.sidebar-mode == "outline" ? "This PDF has no outline." : "No pages";
+                color: ReaderColors.muted;
+                wrap: word-wrap;
+            }
+            Rectangle { x: parent.width - 1px; width: 1px; background: ReaderColors.border; }
+        }
+
+        document-view := Rectangle {
+            x: root.rail-width;
+            y: root.header-height;
+            width: parent.width - root.rail-width;
+            height: max(0px, parent.height - root.header-height - root.footer-height);
+            clip: true;
+            background: ReaderColors.background;
+            accessible-role: main;
+            accessible-label: "PDF document";
+
+            pinch := ScaleRotateGestureHandler {
+                enabled: root.document-open && !root.modal-open;
+                property <float> start-zoom: 100;
+                property <float> pending-zoom: 100;
+                started => {
+                    self.start-zoom = root.zoom-percent;
+                    self.pending-zoom = self.start-zoom;
+                    root.touch-panning = false;
+                    root.reveal();
+                }
+                updated => {
+                    self.pending-zoom = self.start-zoom * self.scale;
+                }
+                ended => {
+                    root.pinch-ending = true;
+                    if (abs(self.pending-zoom - self.start-zoom) > 1) {
+                        root.zoom-to(self.pending-zoom);
+                    }
+                    root.reveal();
+                }
+
+                viewport-touch := TouchArea {
+                    enabled: !root.modal-open;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            keyboard.focus();
+                            root.reveal();
+                            if (event.touch-finger-id != 0 && root.document-open && (!root.drawing || root.pinch-ending)) {
+                                root.pan-start(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y);
+                            }
+                        } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                            root.touch-panning = false;
+                        } else if (event.kind == PointerEventKind.move) {
+                            root.reveal();
+                        }
+                    }
+                    moved => {
+                        if (!pinch.active) { root.pan-move(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y); }
+                    }
+                    scroll-event(event) => {
+                        if (!root.document-open) { return reject; }
+                        root.reveal();
+                        root.wheel(event.delta-x / 1px, event.delta-y / 1px, event.modifiers.control);
+                        return accept;
+                    }
+
+                    for slot in root.pages: Rectangle {
+                        x: slot.x * 1px;
+                        y: slot.y * 1px;
+                        width: slot.width * 1px;
+                        height: slot.height * 1px;
+                        background: #ffffff;
+                        Rectangle {
+                            x: -1px;
+                            y: -1px;
+                            width: parent.width + 2px;
+                            height: parent.height + 2px;
+                            border-width: 1px;
+                            border-color: ReaderColors.border;
+                        }
+                    }
+
+                    for tile in root.tiles: Image {
+                        x: tile.x * 1px;
+                        y: tile.y * 1px;
+                        width: tile.width * 1px;
+                        height: tile.height * 1px;
+                        source: tile.bitmap;
+                        image-fit: fill;
+                        accessible-role: none;
+                    }
+
+                    for slot in root.pages: Rectangle {
+                        x: slot.x * 1px;
+                        y: slot.y * 1px;
+                        width: slot.width * 1px;
+                        height: slot.height * 1px;
+                        accessible-role: image;
+                        accessible-label: "Page " + (slot.page + 1) + " of " + root.page-count;
+
+                        if slot.overlay.width > 0: Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: slot.overlay;
+                            image-fit: fill;
+                            accessible-role: none;
+                        }
+
+                        page-touch := TouchArea {
+                            enabled: !root.modal-open;
+                            mouse-cursor: root.drawing ? crosshair : text;
+                            property <bool> editing;
+                            property <bool> panning;
+                            property <int> press-finger;
+                            function pointer(phase: string) {
+                                if (self.width > 0px && self.height > 0px) {
+                                    root.page-pointer(slot.page, phase,
+                                        max(0, min(1, self.mouse-x / self.width)),
+                                        max(0, min(1, self.mouse-y / self.height)));
+                                }
+                            }
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    keyboard.focus();
+                                    root.reveal();
+                                    if (event.button == PointerEventButton.left) {
+                                        self.press-finger = event.touch-finger-id;
+                                        if (self.press-finger != 0 && (root.pinch-ending || (!root.annotating && !root.drawing))) {
+                                            self.panning = true;
+                                            root.pan-start(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y);
+                                        } else {
+                                            self.editing = true;
+                                            self.pointer("down");
+                                        }
+                                    } else if (event.button == PointerEventButton.right && !root.fullscreen) {
+                                        root.context-x = max(0px, min(document-view.width - 198px, parent.x + self.mouse-x));
+                                        root.context-y = max(0px, min(document-view.height - 175px, parent.y + self.mouse-y));
+                                        context-menu.show();
+                                    }
+                                } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                                    if (self.editing) {
+                                        // Slint sends the second finger's ID when it releases the first to begin a pinch.
+                                        self.pointer(event.kind == PointerEventKind.up && self.press-finger == event.touch-finger-id ? "up" : "cancel");
+                                    }
+                                    self.editing = false;
+                                    self.panning = false;
+                                    root.touch-panning = false;
+                                    root.reveal();
+                                } else if (event.kind == PointerEventKind.move) {
+                                    root.reveal();
+                                }
+                            }
+                            moved => {
+                                if (pinch.active) { return; }
+                                if (self.panning) { root.pan-move(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y); }
+                                else if (self.editing) { self.pointer("move"); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            context-menu := PopupWindow {
+                x: root.context-x;
+                y: root.context-y;
+                width: 198px;
+                height: 175px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: ReaderColors.border;
+                    background: ReaderColors.surface;
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 2px;
+                        for item in [
+                            { label: "Copy selected text", id: "copy" },
+                            { label: "Fit to page", id: "fit-page" },
+                            { label: "Bookmark this page", id: "bookmark" },
+                            { label: "Rotate clockwise", id: "rotate" },
+                        ]: ToolButton {
+                            label: item.label;
+                            activated => { root.command(item.id); context-menu.close(); }
+                        }
+                    }
+                }
+            }
+
+            if !root.document-open: Rectangle {
+                width: min(462px, parent.width - 48px);
+                height: min(parent.height - 32px, root.recent-items.length > 0 ? 328px : 196px);
+                background: ReaderColors.header;
+                border-width: 1px;
+                border-color: ReaderColors.border;
+                border-radius: 14px;
+                clip: true;
+
+                FileMark { x: 22px; y: 25px; width: 42px; height: 42px; }
+                Text {
+                    x: 22px;
+                    y: 81px;
+                    text: "Open a PDF";
+                    color: ReaderColors.ink;
+                    font-size: 25px;
+                    font-weight: 650;
+                }
+                Text {
+                    x: 23px;
+                    y: 115px;
+                    text: "Drop a PDF here or pick a file.";
+                    color: ReaderColors.muted;
+                }
+                ToolButton {
+                    x: 21px;
+                    y: 146px;
+                    width: 105px;
+                    height: 38px;
+                    label: "Open file";
+                    primary: true;
+                    usable: !root.modal-open;
+                    activated => { root.command("open"); }
+                }
+                if root.recent-items.length > 0: Rectangle {
+                    x: 22px;
+                    y: 203px;
+                    width: parent.width - 44px;
+                    height: parent.height - self.y - 12px;
+                    Rectangle { y: 0; height: 1px; background: ReaderColors.border; }
+                    Text {
+                        x: 0;
+                        y: 10px;
+                        text: "Recent files";
+                        font-weight: 600;
+                        color: ReaderColors.muted;
+                    }
+                    ListView {
+                        y: 34px;
+                        height: max(0px, parent.height - self.y);
+                        horizontal-scrollbar-policy: always-off;
+                        for item[index] in root.recent-items: ToolButton {
+                            label: item.label;
+                            text-align: left;
+                            height: 33px;
+                            usable: !root.modal-open;
+                            activated => { root.open-recent(index); }
+                        }
+                    }
+                }
+            }
+
+            drop-zone := DropArea {
+                enabled: !root.modal-open;
+                can-drop(event) => { return root.can-drop-files(event.data) ? DragAction.copy : DragAction.none; }
+                dropped(event) => {
+                    root.drop-files(event.data);
+                    return DragAction.copy;
+                }
+            }
+
+            if drop-zone.has-drag: Rectangle {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                border-width: 2px;
+                border-color: ReaderColors.focus;
+                border-radius: 8px;
+            }
+
+            if root.document-open && !root.modal-open && root.scroll-visible-fraction < 1
+                && (!root.fullscreen || root.controls-visible): DocumentScrollbar {
+                x: parent.width - self.width;
+                y: root.fullscreen ? 72px : 5px;
+                width: root.fullscreen ? 40px : 24px;
+                height: max(0px, parent.height - self.y - (root.fullscreen && root.annotating ? 108px : 5px));
+                progress: root.scroll-progress;
+                visible-fraction: root.scroll-visible-fraction;
+                scroll-to(value) => { root.scroll-to(value); root.reveal(); }
+                wheel(dx, dy, zoom) => { root.wheel(dx, dy, zoom); root.reveal(); }
+            }
+
+            search-panel := Rectangle {
+                visible: root.document-open && root.search-open;
+                x: parent.width - self.width - 14px;
+                y: root.fullscreen && root.controls-visible ? 75px : 12px;
+                width: min(parent.width - 28px, 462px);
+                height: 52px;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: ReaderColors.border;
+                background: ReaderColors.surface;
+                accessible-role: search;
+                accessible-label: "Find in document";
+
+                HorizontalLayout {
+                    padding: 7px;
+                    spacing: 4px;
+                    search-field := Entry {
+                        name: "Find in document";
+                        placeholder-text: "Find in document";
+                        input-type: search;
+                        enabled: root.search-open && !root.modal-open;
+                        horizontal-stretch: 1;
+                        text: root.search-text;
+                        edited(query) => { root.find(query); }
+                        accepted(query) => {
+                            if (query != root.search-text) { root.find(query); }
+                            else { root.command("find-next"); }
+                        }
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) { root.command("toggle-search"); return accept; }
+                            if (event.text == Key.Return && event.modifiers.shift) {
+                                root.command("find-previous");
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+                    Text {
+                        min-width: 56px;
+                        max-width: 94px;
+                        text: root.search-status;
+                        color: ReaderColors.muted;
+                        overflow: elide;
+                        accessible-live-region: polite;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                    ToolButton { label: "Prev"; name: "Previous match"; usable: !root.modal-open; activated => { root.command("find-previous"); } }
+                    ToolButton { label: "Next"; name: "Next match"; usable: !root.modal-open; activated => { root.command("find-next"); } }
+                    ToolButton { label: "X"; name: "Close find"; usable: !root.modal-open; activated => { root.command("toggle-search"); } }
+                }
+            }
+        }
+
+        chrome := Rectangle {
+            visible: !root.fullscreen;
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: root.header-height;
+            background: ReaderColors.header;
+            accessible-role: groupbox;
+            accessible-label: "Reading tools";
+
+            ToolButton {
+                x: 9px;
+                y: 4px;
+                width: 114px;
+                height: 39px;
+                name: "New tab";
+                usable: !root.modal-open;
+                activated => { root.command("new-tab"); }
+                Image { x: 4px; width: 27px; height: 27px; source: @image-url("../assets/tinypdf.png"); accessible-role: none; }
+                Text {
+                    x: 39px;
+                    height: parent.height;
+                    text: "TinyPDF";
+                    color: ReaderColors.ink;
+                    font-size: 15px;
+                    font-weight: 650;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+            tabs-strip := Flickable {
+                x: 128px;
+                y: 0;
+                width: min(root.tabs.length * root.tab-step, parent.width - 326px);
+                height: 47px;
+                content-width: max(self.width, root.tabs.length * root.tab-step);
+                content-height: self.height;
+                mouse-drag-pan-enabled: false;
+                accessible-role: tab-list;
+                accessible-label: "Open documents";
+
+                for tab[index] in root.tabs: Rectangle {
+                    x: index * root.tab-step;
+                    y: 6px;
+                    width: root.tab-step - 4px;
+                    height: 36px;
+                    background: index == root.active-tab ? ReaderColors.surface : transparent;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: index == root.active-tab ? ReaderColors.border : transparent;
+                    FileMark { x: 8px; width: 23px; height: 23px; }
+                    ToolButton {
+                        x: 31px;
+                        y: 0;
+                        width: parent.width - 63px;
+                        height: parent.height;
+                        label: (tab.dirty ? "• " : "") + tab.title;
+                        name: tab.title + (tab.dirty ? ", unsaved changes" : "");
+                        text-align: left;
+                        usable: !root.modal-open;
+                        activated => { root.select-tab(index); }
+                    }
+                    ToolButton {
+                        x: parent.width - self.width - 2px;
+                        y: 2px;
+                        width: 34px;
+                        height: parent.height - 4px;
+                        label: "X";
+                        name: "Close " + tab.title;
+                        usable: !root.modal-open;
+                        activated => { root.close-tab(index); }
+                    }
+                    if index == root.active-tab: Rectangle {
+                        y: parent.height - 2px;
+                        height: 2px;
+                        width: parent.width - 18px;
+                        background: ReaderColors.accent;
+                    }
+                }
+            }
+            if root.tab-overflow: ToolButton {
+                x: tabs-strip.x + tabs-strip.width;
+                y: 6px;
+                width: 34px;
+                height: 36px;
+                label: "‹";
+                name: "Previous tab";
+                usable: !root.modal-open;
+                activated => { root.command("previous-tab"); }
+            }
+            if root.tab-overflow: ToolButton {
+                x: tabs-strip.x + tabs-strip.width + 34px;
+                y: 6px;
+                width: 34px;
+                height: 36px;
+                label: "›";
+                name: "Next tab";
+                usable: !root.modal-open;
+                activated => { root.command("next-tab"); }
+            }
+            ToolButton {
+                x: tabs-strip.x + tabs-strip.width + (root.tab-overflow ? 70px : 3px);
+                y: 6px;
+                width: 34px;
+                height: 36px;
+                label: "+";
+                name: "Create new tab";
+                usable: !root.modal-open;
+                activated => { root.command("new-tab"); }
+            }
+
+            ToolButton {
+                x: parent.width - 88px;
+                y: 6px;
+                width: 80px;
+                height: 36px;
+                label: "Settings";
+                usable: !root.modal-open;
+                activated => { settings-menu.show(); }
+
+                settings-menu := PopupWindow {
+                    x: parent.width - self.width;
+                    y: parent.height + 5px;
+                    width: 286px;
+                    height: min(374px, root.height - 68px);
+                    close-policy: close-on-click-outside;
+                    Rectangle {
+                        background: ReaderColors.surface;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: ReaderColors.border;
+                        ScrollView {
+                            horizontal-scrollbar-policy: always-off;
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 3px;
+                                Text { text: "Appearance"; color: ReaderColors.muted; font-size: 12px; }
+                                ToolButton {
+                                    label: root.dark-mode ? "Use light theme" : "Use dark theme";
+                                    text-align: left;
+                                    activated => { root.command("toggle-theme"); }
+                                }
+                                Text { text: "Startup and memory"; color: ReaderColors.muted; font-size: 12px; }
+                                ToolButton {
+                                    label: root.restore-session ? "Restore tabs (on)" : "Restore tabs (off)";
+                                    selected: root.restore-session;
+                                    text-align: left;
+                                    activated => { root.command("settings-session"); }
+                                }
+                                ToolButton {
+                                    label: root.memory-saver ? "Memory saver (on)" : "Memory saver (off)";
+                                    selected: root.memory-saver;
+                                    text-align: left;
+                                    activated => { root.command("settings-memory"); }
+                                }
+                                Text { text: "Defaults for new PDFs"; color: ReaderColors.muted; font-size: 12px; }
+                                ToolButton {
+                                    label: root.default-fit-width ? "Zoom: Fit width" : "Zoom: Fit page";
+                                    text-align: left;
+                                    activated => { root.command("settings-fit"); }
+                                }
+                                for option in [
+                                    { id: "continuous", label: "Continuous scroll" },
+                                    { id: "single", label: "Single page" },
+                                    { id: "spread", label: "Two-page spread" },
+                                ]: ToolButton {
+                                    label: option.label;
+                                    selected: root.default-reading-mode == option.id;
+                                    text-align: left;
+                                    activated => { root.command("settings-" + option.id); }
+                                }
+                                ToolButton {
+                                    label: "About TinyPDF";
+                                    text-align: left;
+                                    activated => { settings-menu.close(); about-tinypdf.show(); }
+                                }
+                            }
+                        }
+                    }
+                }
+                about-tinypdf := PopupWindow {
+                    x: parent.width - self.width;
+                    y: parent.height + 5px;
+                    width: 242px;
+                    height: 133px;
+                    close-policy: close-on-click-outside;
+                    Rectangle {
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: ReaderColors.border;
+                        background: ReaderColors.surface;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 7px;
+                            Text {
+                                text: "TinyPDF";
+                                font-size: 16px;
+                                font-weight: 650;
+                                color: ReaderColors.ink;
+                            }
+                            AboutSlint {}
+                            ToolButton { label: "Close"; activated => { about-tinypdf.close(); } }
+                        }
+                    }
+                }
+            }
+
+            toolbar := Rectangle {
+                visible: root.document-open;
+                y: 47px;
+                height: 47px;
+                background: ReaderColors.surface;
+                Rectangle { y: 0; height: 1px; background: ReaderColors.border; }
+                Rectangle { y: parent.height - 1px; height: 1px; background: ReaderColors.border; }
+
+                HorizontalLayout {
+                    padding-left: 9px;
+                    padding-right: 9px;
+                    padding-top: 5px;
+                    padding-bottom: 5px;
+                    spacing: 4px;
+                    ToolButton {
+                        label: "Pages";
+                        name: "Toggle document sidebar";
+                        usable: root.document-open && !root.modal-open;
+                        selected: root.sidebar-open;
+                        activated => { root.command("toggle-sidebar"); }
+                    }
+                    ToolbarDivider {}
+                    page-field := Entry {
+                        width: 53px;
+                        name: "Go to page";
+                        horizontal-alignment: center;
+                        input-type: number;
+                        enabled: root.document-open && !root.modal-open;
+                        text: root.document-open ? "" + root.page-number : "";
+                        accepted(value) => {
+                            if (value.is-float()) { root.go-to-page(value.to-float()); }
+                            self.text = "" + root.page-number;
+                            keyboard.focus();
+                        }
+                    }
+                    Text {
+                        text: root.page-count > 0 ? "of " + root.page-count : "of —";
+                        font-size: 12px;
+                        color: ReaderColors.muted;
+                        vertical-alignment: center;
+                    }
+                    ToolButton {
+                        label: "Find";
+                        name: "Find in document";
+                        usable: root.page-count > 0 && !root.modal-open;
+                        selected: root.search-open;
+                        activated => { root.command("toggle-search"); }
+                    }
+                    ToolbarDivider {}
+                    ToolButton {
+                        label: "−";
+                        name: "Zoom out";
+                        usable: root.document-open && !root.modal-open;
+                        activated => { root.command("zoom-out"); }
+                    }
+                    ToolButton {
+                        label: root.zoom-label;
+                        name: "Change zoom";
+                        usable: root.document-open && !root.modal-open;
+                        activated => { zoom-menu.show(); }
+                        zoom-menu := PopupWindow {
+                            forward-focus: zoom-entry;
+                            y: parent.height + 5px;
+                            width: 178px;
+                            height: 52px;
+                            close-policy: close-on-click-outside;
+                            Rectangle {
+                                background: ReaderColors.surface;
+                                border-radius: 7px;
+                                border-width: 1px;
+                                border-color: ReaderColors.border;
+                                HorizontalLayout {
+                                    padding: 7px;
+                                    spacing: 3px;
+                                    zoom-entry := Entry {
+                                        name: "Zoom percentage";
+                                        placeholder-text: "Percent";
+                                        input-type: decimal;
+                                        text: root.zoom-percent.to-fixed(0);
+                                        init => { self.select-all(); }
+                                        accepted(value) => {
+                                            if (value.is-float()) { root.zoom-to(value.to-float()); zoom-menu.close(); }
+                                        }
+                                    }
+                                    ToolButton {
+                                        label: "Apply";
+                                        activated => {
+                                            if (zoom-entry.text.is-float()) { root.zoom-to(zoom-entry.text.to-float()); zoom-menu.close(); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ToolButton {
+                        label: "+";
+                        name: "Zoom in";
+                        usable: root.document-open && !root.modal-open;
+                        activated => { root.command("zoom-in"); }
+                    }
+                    ToolButton {
+                        label: "View";
+                        name: "Page view";
+                        usable: root.page-count > 0 && !root.modal-open;
+                        activated => { view-menu.show(); }
+                        view-menu := PopupWindow {
+                            y: parent.height + 5px;
+                            width: 188px;
+                            height: 200px;
+                            close-policy: close-on-click-outside;
+                            Rectangle {
+                                background: ReaderColors.surface;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: ReaderColors.border;
+                                VerticalLayout {
+                                    padding: 6px;
+                                    spacing: 2px;
+                                    for item in [
+                                        { label: "Continuous scroll", id: "continuous" },
+                                        { label: "Single page", id: "single" },
+                                        { label: "Two-page spread", id: "spread" },
+                                    ]: ToolButton {
+                                        label: item.label;
+                                        text-align: left;
+                                        selected: root.reading-mode == item.id;
+                                        activated => { root.command("reading-" + item.id); view-menu.close(); }
+                                    }
+                                    ToolButton {
+                                        label: "Fit page";
+                                        text-align: left;
+                                        activated => { root.command("fit-page"); view-menu.close(); }
+                                    }
+                                    ToolButton {
+                                        label: "Fit width";
+                                        text-align: left;
+                                        activated => { root.command("fit-width"); view-menu.close(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    ToolbarDivider {}
+                    ToolButton {
+                        label: "Annotate";
+                        name: "Toggle annotation tools";
+                        usable: root.document-open && !root.modal-open;
+                        selected: root.annotating;
+                        activated => { root.toggle-annotations(); }
+                    }
+                    ToolButton {
+                        label: "More";
+                        name: "More document actions";
+                        usable: root.document-open && !root.modal-open;
+                        activated => { more-menu.show(); }
+
+                        more-menu := PopupWindow {
+                            x: parent.width - self.width;
+                            y: parent.height + 5px;
+                            width: 218px;
+                            height: min(root.height - 110px,
+                                14px + 38px * (7 + (root.ocr-available ? 4 : 0) + (root.print-available ? 1 : 0)));
+                            close-policy: close-on-click-outside;
+                            Rectangle {
+                                background: ReaderColors.surface;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: ReaderColors.border;
+                                ScrollView {
+                                    horizontal-scrollbar-policy: always-off;
+                                    VerticalLayout {
+                                        padding: 7px;
+                                        spacing: 2px;
+                                        for item in [
+                                            { label: "Rotate clockwise", id: "rotate" },
+                                            { label: "Fullscreen", id: "toggle-fullscreen" },
+                                            { label: "Bookmark this page", id: "bookmark" },
+                                            { label: "Document information", id: "metadata" },
+                                            { label: "Save As", id: "save-as" },
+                                        ]: ToolButton {
+                                            label: item.label;
+                                            text-align: left;
+                                            activated => { root.command(item.id); more-menu.close(); }
+                                        }
+                                        ToolButton {
+                                            label: "View page text";
+                                            text-align: left;
+                                            activated => { root.command("page-text"); more-menu.close(); }
+                                        }
+                                        if root.ocr-available: ToolButton {
+                                            label: "Read page aloud";
+                                            text-align: left;
+                                            activated => { root.command("read-aloud"); more-menu.close(); }
+                                        }
+                                        if root.ocr-available: ToolButton {
+                                            label: "Stop reading";
+                                            text-align: left;
+                                            activated => { root.command("stop-reading"); more-menu.close(); }
+                                        }
+                                        if root.ocr-available: ToolButton {
+                                            label: "Extract page text (OCR)";
+                                            text-align: left;
+                                            activated => { root.command("recognize-page"); more-menu.close(); }
+                                        }
+                                        if root.ocr-available: ToolButton {
+                                            label: "Select area for OCR";
+                                            text-align: left;
+                                            activated => { root.command("tool-ocr"); more-menu.close(); }
+                                        }
+                                        ToolButton {
+                                            label: "Save";
+                                            text-align: left;
+                                            activated => { root.command("save"); more-menu.close(); }
+                                        }
+                                        if root.print-available: ToolButton {
+                                            label: "Print";
+                                            text-align: left;
+                                            activated => { root.command("print"); more-menu.close(); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.annotating && root.document-open && !root.fullscreen && !root.modal-open: AnnotationBar {
+                y: 94px;
+                tool: root.annotation-tool;
+                pen-color: root.pen-color-value;
+                pen-width: root.pen-width-value;
+                command(action) => { root.command(action); }
+                color-picked(value) => { root.pen-color(value); }
+                width-picked(value) => { root.pen-width(value); }
+            }
+        }
+
+        footer := Rectangle {
+            visible: !root.fullscreen;
+            y: parent.height - self.height;
+            height: root.footer-height;
+            background: ReaderColors.header;
+            Rectangle { y: 0; height: 1px; background: ReaderColors.border; }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 12px;
+                Text {
+                    text: root.status-text;
+                    color: ReaderColors.muted;
+                    accessible-live-region: polite;
+                    horizontal-stretch: 1;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.document-open: Text {
+                    text: root.reading-mode == "single" ? "Single page" : root.reading-mode == "spread" ? "Two-page spread" : "Continuous scroll";
+                    color: ReaderColors.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.fullscreen: Rectangle {
+            property <bool> shown: root.controls-visible && !root.modal-open;
+            x: 12px;
+            y: self.shown ? 12px : -54px;
+            width: parent.width - 24px;
+            height: 54px;
+            border-radius: 9px;
+            border-color: ReaderColors.border;
+            border-width: 1px;
+            background: ReaderColors.surface;
+            animate y { duration: 120ms; easing: ease-out; }
+            TouchArea {
+                enabled: parent.shown;
+                pointer-event(event) => { if (event.kind == PointerEventKind.move) { root.reveal(); } }
+            }
+            HorizontalLayout {
+                padding: 5px;
+                spacing: 5px;
+                ToolButton {
+                    label: "‹";
+                    name: "Previous page";
+                    control-height: 44px;
+                    width: 45px;
+                    usable: root.controls-visible && !root.modal-open && root.page-number > 1;
+                    activated => { root.command("previous-page"); root.reveal(); }
+                }
+                Text {
+                    text: root.page-number + " / " + root.page-count;
+                    vertical-alignment: center;
+                    color: ReaderColors.muted;
+                }
+                ToolButton {
+                    label: "›";
+                    name: "Next page";
+                    control-height: 44px;
+                    width: 45px;
+                    usable: root.controls-visible && !root.modal-open && root.page-number < root.page-count;
+                    activated => { root.command("next-page"); root.reveal(); }
+                }
+                ToolbarDivider {}
+                ToolButton {
+                    label: "−";
+                    name: "Zoom out";
+                    control-height: 44px;
+                    width: 45px;
+                    usable: root.controls-visible && !root.modal-open;
+                    activated => { root.command("zoom-out"); root.reveal(); }
+                }
+                Text {
+                    text: root.zoom-label;
+                    vertical-alignment: center;
+                    color: ReaderColors.muted;
+                }
+                ToolButton {
+                    label: "+";
+                    name: "Zoom in";
+                    control-height: 44px;
+                    width: 45px;
+                    usable: root.controls-visible && !root.modal-open;
+                    activated => { root.command("zoom-in"); root.reveal(); }
+                }
+                ToolButton {
+                    label: "Fit page";
+                    control-height: 44px;
+                    usable: root.controls-visible && !root.modal-open;
+                    activated => { root.command("fit-page"); root.reveal(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                ToolButton {
+                    label: "Find";
+                    selected: root.search-open;
+                    control-height: 44px;
+                    usable: root.controls-visible && !root.modal-open;
+                    activated => { root.command("toggle-search"); root.reveal(); }
+                }
+                ToolButton {
+                    label: "Annotate";
+                    selected: root.annotating;
+                    control-height: 44px;
+                    usable: root.controls-visible && !root.modal-open;
+                    activated => { root.toggle-annotations(); }
+                }
+                ToolButton {
+                    label: "Exit fullscreen";
+                    primary: true;
+                    control-height: 44px;
+                    usable: root.controls-visible && !root.modal-open;
+                    activated => { root.command("toggle-fullscreen"); }
+                }
+            }
+        }
+
+        if root.fullscreen && root.controls-visible && root.annotating && !root.modal-open: AnnotationBar {
+            y: parent.height - self.height;
+            touch-mode: true;
+            tool: root.annotation-tool;
+            pen-color: root.pen-color-value;
+            pen-width: root.pen-width-value;
+            command(action) => { root.command(action); root.reveal(); }
+            color-picked(value) => { root.pen-color(value); root.reveal(); }
+            width-picked(value) => { root.pen-width(value); root.reveal(); }
+        }
+
+        prompt-scope := FocusScope {
+            enabled: root.modal-open;
+            visible: root.modal-open;
+            Rectangle {
+                background: #0a0c10bd;
+                TouchArea {}
+                Rectangle {
+                    width: min(470px, parent.width - 40px);
+                    height: root.password-requested || root.text-prompt ? 187px : min(335px, parent.height - 44px);
+                    border-radius: 11px;
+                    background: ReaderColors.surface;
+                    border-width: 1px;
+                    border-color: ReaderColors.border;
+                    accessible-role: groupbox;
+                    accessible-label: prompt-title.text;
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 11px;
+                        prompt-title := Text {
+                            text: root.password-requested ? "Password required" : root.input-title;
+                            color: ReaderColors.ink;
+                            font-size: 19px;
+                            font-weight: 650;
+                        }
+                        if root.password-requested: Text {
+                            text: "Enter the password to open this PDF.";
+                            color: ReaderColors.muted;
+                        }
+                        prompt-field := Entry {
+                            visible: root.password-requested || root.text-prompt;
+                            enabled: root.modal-open && self.visible;
+                            height: self.visible ? 38px : 0px;
+                            name: root.password-requested ? "PDF password" : root.input-title;
+                            input-type: root.password-requested ? InputType.password : InputType.text;
+                            accepted => { root.submit-modal(); }
+                            key-pressed(event) => {
+                                if (event.text == Key.Escape) { root.cancel-modal(); return accept; }
+                                return reject;
+                            }
+                        }
+                        if !root.password-requested && !root.text-prompt: TextEdit {
+                            text: root.input-value;
+                            read-only: true;
+                            accessible-label: root.input-title;
+                            vertical-stretch: 1;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 6px;
+                            if root.password-requested || root.text-prompt || root.input-request == "confirm": ToolButton {
+                                label: "Cancel";
+                                activated => { root.cancel-modal(); }
+                            }
+                            ToolButton {
+                                label: root.password-requested ? "Unlock" : root.input-request == "confirm" ? "Continue" : root.text-prompt ? "Apply" : "Close";
+                                primary: true;
+                                activated => { root.submit-modal(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

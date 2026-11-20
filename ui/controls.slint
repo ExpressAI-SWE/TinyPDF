@@ -1,0 +1,107 @@
+import { LineEdit } from "std-widgets.slint";
+
+export global ReaderColors {
+    in property <bool> dark;
+    out property <color> background: dark ? #181a1e : #e4eaf0;
+    out property <color> header: dark ? #22252a : #eef3f7;
+    out property <color> surface: dark ? #292d33 : #fcfdff;
+    out property <color> raised: dark ? #373d46 : #e1eaf3;
+    out property <color> border: dark ? #474f5a : #c8d3de;
+    out property <color> ink: dark ? #edf4fa : #202d3a;
+    out property <color> muted: dark ? #b5c5d5 : #4e6276;
+    out property <color> accent: dark ? #31699a : #245782;
+    out property <color> accent-ink: #ffffff;
+    out property <color> selected: dark ? #304d69 : #dceaf7;
+    out property <color> focus: dark ? #8fc6fa : #1f6aaa;
+}
+
+export component ToolButton inherits Rectangle {
+    in property <string> label;
+    in property <string> name: label;
+    in property <bool> selected;
+    in property <bool> primary;
+    in property <bool> usable: true;
+    in property <length> control-height: 36px;
+    in property <TextHorizontalAlignment> text-align: center;
+    callback activated();
+
+    min-width: 34px;
+    preferred-width: caption.preferred-width + 20px;
+    preferred-height: control-height;
+    horizontal-stretch: 0;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: keyboard.has-focus ? ReaderColors.focus : root.selected ? ReaderColors.border : transparent;
+    background: !root.usable ? transparent : root.primary
+        ? (touch.pressed ? #183d5d : touch.has-hover ? #204a6d : ReaderColors.accent)
+        : touch.pressed ? ReaderColors.raised : root.selected ? ReaderColors.selected
+        : touch.has-hover ? ReaderColors.raised : transparent;
+
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-enabled: root.usable;
+    accessible-action-default => { if (root.usable) { root.activated(); } }
+
+    caption := Text {
+        x: 8px;
+        y: 0;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.label;
+        color: !root.usable ? ReaderColors.muted.transparentize(0.27) : root.primary ? ReaderColors.accent-ink : ReaderColors.ink;
+        font-size: 13px;
+        font-weight: root.selected || root.primary ? 650 : 500;
+        vertical-alignment: center;
+        horizontal-alignment: root.text-align;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    keyboard := FocusScope {
+        enabled: root.usable;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                if (!event.repeat) { root.activated(); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.usable;
+        mouse-cursor: pointer;
+        clicked => {
+            keyboard.focus();
+            root.activated();
+        }
+    }
+}
+
+export component Entry inherits LineEdit {
+    in property <string> name;
+    preferred-height: 34px;
+    font-size: 13px;
+    accessible-label: name;
+}
+
+export component ToolbarDivider inherits Rectangle {
+    width: 1px;
+    height: 21px;
+    background: ReaderColors.border;
+}
+
+export component FileMark inherits Rectangle {
+    background: ReaderColors.selected;
+    border-radius: 8px;
+
+    Rectangle {
+        width: parent.width * 0.43;
+        height: parent.height * 0.56;
+        border-color: ReaderColors.accent;
+        border-width: 1.4px;
+        border-radius: 2px;
+        Rectangle { width: parent.width * 0.43; height: 1px; y: parent.height * 0.45; background: ReaderColors.accent; }
+        Rectangle { width: parent.width * 0.43; height: 1px; y: parent.height * 0.65; background: ReaderColors.accent; }
+    }
+}

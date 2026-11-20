@@ -1,0 +1,89 @@
+import { ReaderColors } from "controls.slint";
+
+export component DocumentScrollbar inherits Rectangle {
+    in property <float> progress;
+    in property <float> visible-fraction: 1;
+    callback scroll-to(float);
+    callback wheel(float, float, bool);
+
+    width: 24px;
+    property <length> thumb-height: min(root.height, max(24px, root.height * clamp(root.visible-fraction, 0, 1)));
+    property <length> travel: root.height - root.thumb-height;
+    property <length> thumb-y: root.travel * clamp(root.progress, 0, 1);
+    property <float> arrow-step: max(0.00025, root.visible-fraction / 10);
+    property <float> page-step: max(root.arrow-step, root.visible-fraction / max(0.001, 1 - root.visible-fraction));
+
+    function jump(target: float) {
+        root.scroll-to(clamp(target, 0, 1));
+    }
+
+    accessible-role: slider;
+    accessible-label: "Document scroll position";
+    accessible-orientation: vertical;
+    accessible-value: (root.progress * 100).to-fixed(0);
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    accessible-value-step: root.arrow-step * 100;
+    accessible-action-decrement => { root.jump(root.progress - root.arrow-step); }
+    accessible-action-increment => { root.jump(root.progress + root.arrow-step); }
+    accessible-action-set-value(value) => {
+        if (value.is-float()) { root.jump(value.to-float() / 100); }
+    }
+
+    Rectangle {
+        x: parent.width - self.width - 4px;
+        y: 0;
+        width: drag.has-hover || drag.pressed || key.has-focus ? 10px : 5px;
+        height: parent.height;
+        border-radius: self.width / 2;
+        background: drag.has-hover || drag.pressed || key.has-focus ? ReaderColors.header : transparent;
+    }
+
+    Rectangle {
+        x: parent.width - self.width - 4px;
+        y: root.thumb-y;
+        width: drag.has-hover || drag.pressed || key.has-focus ? 10px : 5px;
+        height: root.thumb-height;
+        border-radius: self.width / 2;
+        background: drag.pressed || key.has-focus ? ReaderColors.focus : drag.has-hover ? ReaderColors.muted : #596774;
+    }
+
+    key := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                root.jump(root.progress + root.arrow-step * (event.text == Key.UpArrow ? -1 : 1));
+            } else if (event.text == Key.PageUp || event.text == Key.PageDown) {
+                root.jump(root.progress + root.page-step * (event.text == Key.PageUp ? -1 : 1));
+            } else if (event.text == Key.Home || event.text == Key.End) {
+                root.jump(event.text == Key.Home ? 0 : 1);
+            } else {
+                return reject;
+            }
+            return accept;
+        }
+    }
+
+    drag := TouchArea {
+        property <length> grab-y;
+
+        function drag-to-pointer() {
+            if (root.travel > 0px) {
+                root.jump((self.mouse-y - self.grab-y) / root.travel);
+            }
+        }
+
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                key.focus();
+                self.grab-y = self.mouse-y >= root.thumb-y && self.mouse-y <= root.thumb-y + root.thumb-height
+                    ? self.mouse-y - root.thumb-y : root.thumb-height / 2;
+                self.drag-to-pointer();
+            }
+        }
+        moved => { self.drag-to-pointer(); }
+        scroll-event(event) => {
+            root.wheel(event.delta-x / 1px, event.delta-y / 1px, event.modifiers.control);
+            return accept;
+        }
+    }
+}

@@ -1,0 +1,94 @@
+import { ReaderColors, ToolButton, ToolbarDivider } from "controls.slint";
+
+export component AnnotationBar inherits Rectangle {
+    in property <string> tool;
+    in property <string> pen-color;
+    in property <float> pen-width;
+    in property <bool> touch-mode;
+    callback command(string);
+    callback color-picked(string);
+    callback width-picked(float);
+
+    property <length> row-height: root.touch-mode ? 44px : 36px;
+    height: 2 * root.row-height + 14px;
+    background: ReaderColors.surface;
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            height: root.row-height;
+            alignment: start;
+            spacing: 4px;
+            for item in [
+                { label: "Select", id: "select" },
+                { label: "Pen", id: "ink" },
+                { label: "Highlight", id: "highlight" },
+                { label: "Underline", id: "underline" },
+                { label: "Strikeout", id: "strikeout" },
+                { label: "Note", id: "note" },
+                { label: "Text", id: "text" },
+                { label: "Move", id: "move" },
+                { label: "Erase", id: "eraser" },
+                { label: "Delete", id: "delete" },
+            ]: ToolButton {
+                label: item.label;
+                selected: root.tool == item.id;
+                activated => { root.command("tool-" + item.id); }
+            }
+        }
+
+        HorizontalLayout {
+            height: root.row-height;
+            alignment: start;
+            spacing: 5px;
+            for item in [
+                { label: "Line", id: "line" },
+                { label: "Arrow", id: "arrow" },
+                { label: "Rectangle", id: "rectangle" },
+                { label: "Ellipse", id: "ellipse" },
+            ]: ToolButton {
+                label: item.label;
+                selected: root.tool == item.id;
+                activated => { root.command("tool-" + item.id); }
+            }
+            ToolbarDivider {}
+            for item in [
+                { label: "Amber", hex: "#f7bd45", swatch: #f7bd45 },
+                { label: "Coral", hex: "#e65761", swatch: #e65761 },
+                { label: "Blue", hex: "#4c92e3", swatch: #4c92e3 },
+                { label: "Green", hex: "#36a97b", swatch: #36a97b },
+                { label: "Black", hex: "#151515", swatch: #151515 },
+            ]: ToolButton {
+                width: 29px;
+                name: item.label + " pen";
+                selected: root.pen-color == item.hex;
+                activated => { root.color-picked(item.hex); }
+                Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    background: item.swatch;
+                    border-color: ReaderColors.muted;
+                    border-width: 1px;
+                }
+            }
+            ToolbarDivider {}
+            for value in [1, 3, 6]: ToolButton {
+                label: value + " pt";
+                name: "Pen width " + value + " points";
+                selected: root.pen-width == value;
+                activated => { root.width-picked(value); }
+            }
+            ToolbarDivider {}
+            ToolButton { label: "Undo"; activated => { root.command("undo"); } }
+            ToolButton { label: "Redo"; activated => { root.command("redo"); } }
+        }
+    }
+
+    Rectangle { y: parent.height - 1px; height: 1px; background: ReaderColors.border; }
+}
