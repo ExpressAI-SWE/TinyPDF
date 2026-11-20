@@ -12,9 +12,10 @@ import threading
 import time
 
 from PIL import ImageGrab
-from pywinauto import Application, keyboard
+from pywinauto import Application, keyboard, mouse
 import win32api
 import win32con
+import win32file
 import win32gui
 import win32process
 
@@ -143,6 +144,7 @@ def check_recovery(executable, fixture):
             wait_for("next page", lambda: page_number(window) == "2")
             invoke(window, "Previous page")
             wait_for("previous page", lambda: page_number(window) == "1")
+            check_save_with_reader_lock(window, broken)
         print("PASS corrupt PDF recovery and reader navigation", flush=True)
 
         dll = scratch / "pdfium.dll"
@@ -163,6 +165,32 @@ def check_recovery(executable, fixture):
         print("PASS PDF password rejection and retry", flush=True)
 
         check_pdf_links(executable, fixture, scratch)
+
+
+def check_save_with_reader_lock(window, path):
+    invoke(window, "Toggle annotation tools")
+    invoke(window, "Note")
+    page = next(item for item in window.descendants(control_type="Image")
+                if item.window_text().startswith("Page 1 of "))
+    box = page.rectangle()
+    mouse.click(coords=((box.left + box.right) // 2, (box.top + box.bottom) // 2))
+    window.child_window(title="Annotation text", control_type="Edit").wait("visible", timeout=8)
+    keyboard.send_keys("TinyPDF save regression{ENTER}", vk_packet=False)
+    wait_for("unsaved note", lambda: window.child_window(
+        title=f"{path.name}, unsaved changes", control_type="Button").exists(timeout=0))
+    original = path.read_bytes()
+    lock = win32file.CreateFile(str(path), win32con.GENERIC_READ,
+                               win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE, None,
+                               win32con.OPEN_EXISTING, win32con.FILE_ATTRIBUTE_NORMAL, None)
+    try:
+        keyboard.send_keys("^s", vk_packet=False)
+        wait_for("save started", lambda: text_exists(window, "Saving document…"), 5)
+        time.sleep(0.10)
+    finally:
+        lock.Close()
+    wait_for("save after reader releases the file", lambda: text_exists(window, "Document saved."))
+    assert path.read_bytes() != original, "saved PDF bytes were unchanged"
+    print("PASS annotation save while another reader briefly holds the file", flush=True)
 
 
 def check_pdf_links(executable, fixture, scratch):

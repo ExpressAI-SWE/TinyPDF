@@ -2,9 +2,11 @@
 
 The v1 candidate tracks version `1.0.0-beta.1`. Its Windows Installer version is `0.99.1`, which allows a later Windows `1.0.0` package to supersede it. The v1 changes add PDF links, Windows Default Apps registration, new button states, and per-tab open and save recovery. Each download has a 128 MiB limit and a fixed timeout. The app keeps downloaded PDFs temporarily until you close the tab or save a permanent copy.
 
-The v1 candidate passed 13 Rust tests and a Windows desktop run covering corrupt PDF retry, recovery after restoring a missing PDFium DLL, incorrect and correct passwords, HTTP redirects, HTML rejection, closing a downloaded PDF, and 768 rapid wheel events with 47 reversals. The 501-page run measured 7.51 MiB of idle private commit and 40.79 MiB peak total working set. The final view matched the initial reference crop byte for byte.
+The v1 candidate passed 14 Rust tests and Windows desktop checks covering corrupt PDF retry, recovery after restoring a missing PDFium DLL, incorrect and correct passwords, HTTP redirects, a live HTTPS PDF, HTML rejection, and cleanup after closing a downloaded PDF. A 501-page run delivered 6,000 wheel events and 299 direction reversals. The final view matched the initial reference crop byte for byte. Peak total working set was 41.72 MiB and idle private commit was 7.57 MiB.
 
-The v1 packages build with `scripts/build-windows-candidate.ps1`. The local NSIS (7,911,922 bytes) and MSIX (10,277,632 bytes) passed extraction, payload comparison and three native PDF reads each. The local MSI (10,117,120 bytes) passed installation, Default Apps and Start Menu registration, three native PDF reads, and uninstallation. Use the hosted checks for clean-account NSIS and disposable signed MSIX validation. A public MSIX still requires publisher signing.
+A Windows file-lock regression confirmed that TinyPDF leaves the original PDF intact if another reader keeps it locked. The desktop regression confirmed that a note saves successfully when the other reader releases a temporary lock. The page number field waits until the selected document is ready before exposing its page value.
+
+Build the v1 packages with `scripts/build-windows-candidate.ps1`. Local NSIS and MSIX payloads passed extraction and native PDF reading. The MSI passed installation, Default Apps and Start Menu registration, native PDF reading, and uninstallation. Hosted checks cover clean-account NSIS and disposable signed MSIX validation. A public MSIX still requires publisher signing.
 
 The sections below record the earlier 0.2.0 hardening build and its evidence.
 

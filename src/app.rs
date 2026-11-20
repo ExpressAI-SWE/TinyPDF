@@ -674,7 +674,11 @@ impl App {
             ui.set_document_open(!tab.path.as_os_str().is_empty());
             ui.set_active_tab(index as i32);
             ui.set_page_count(tab.sizes.len() as i32);
-            ui.set_page_number((tab.reading.page + 1) as i32);
+            ui.set_page_number(if tab.opened() {
+                (tab.reading.page + 1) as i32
+            } else {
+                0
+            });
             ui.set_reading_mode(tab.reading.mode.label().into());
             ui.set_search_open(tab.search.open);
             ui.set_search_text(tab.search.query.as_str().into());
@@ -684,6 +688,7 @@ impl App {
             ui.set_document_open(false);
             ui.set_active_tab(-1);
             ui.set_page_count(0);
+            ui.set_page_number(0);
             ui.set_search_open(false);
             ui.set_print_available(false);
         }

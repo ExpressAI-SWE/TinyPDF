@@ -247,11 +247,15 @@ export component MainWindow inherits Window {
     changed fullscreen => { keyboard.focus(); }
     changed tab-viewport => { root.reveal-active-tab(); }
     changed active-tab => {
-        page-field.text = "" + root.page-number;
+        page-field.text = root.document-ready ? "" + root.page-number : "";
         root.reveal-active-tab();
         root.annotating = false;
     }
-    changed page-number => { page-field.text = "" + root.page-number; }
+    changed page-number => {
+        if (!page-field.has-focus) {
+            page-field.text = root.document-ready ? "" + root.page-number : "";
+        }
+    }
     changed annotation-tool => { if (root.drawing) { root.annotating = true; } }
     changed search-open => {
         if (root.search-open) { search-field.focus(); search-field.select-all(); }
@@ -1069,6 +1073,9 @@ export component MainWindow inherits Window {
                         input-type: number;
                         enabled: root.document-ready && !root.modal-open;
                         text: root.document-ready ? "" + root.page-number : "";
+                        changed has-focus => {
+                            if (!self.has-focus) { self.text = root.document-ready ? "" + root.page-number : ""; }
+                        }
                         accepted(value) => {
                             if (value.is-float()) { root.go-to-page(value.to-float()); }
                             self.text = "" + root.page-number;

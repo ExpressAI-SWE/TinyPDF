@@ -1372,19 +1372,46 @@ impl Document<'_> {
                 writer
                     .file
                     .get_ref()
-                    .set_permissions(metadata.permissions())?;
+                    .set_permissions(metadata.permissions())
+                    .map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "Could not preserve the destination PDF’s permissions. {error}"
+                            ),
+                        )
+                    })?;
             }
             writer.file.get_ref().sync_all()?;
             drop(writer);
             let stamp = FileStamp::at(&temporary)?
                 .ok_or(PdfError::Pdf("The temporary PDF is no longer available."))?;
-            self.verify_source()?;
-            if resolve_destination(&requested)? != path || FileStamp::at(&path)? != expected {
-                return Err(PdfError::Pdf(
-                    "The output PDF changed while TinyPDF was saving. Choose a different Save As path.",
-                ));
+            let mut retry_delays = [25, 55, 110, 220].into_iter();
+            loop {
+                // Refuse a changed source or destination before each replacement attempt.
+                self.verify_source()?;
+                if resolve_destination(&requested)? != path || FileStamp::at(&path)? != expected {
+                    return Err(PdfError::Pdf(
+                        "The output PDF changed while TinyPDF was saving. Choose a different Save As path.",
+                    ));
+                }
+                match fs::rename(&temporary, &path) {
+                    Ok(()) => break,
+                    Err(error) => {
+                        if cfg!(windows)
+                            && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+                            && let Some(delay) = retry_delays.next()
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(delay));
+                            continue;
+                        }
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!("Could not replace the PDF. Close it in other apps or choose Save As. {error}"),
+                        ).into());
+                    }
+                }
             }
-            fs::rename(&temporary, &path)?;
             *self.destination.borrow_mut() = SaveDestination {
                 requested,
                 target: path,
@@ -1983,6 +2010,35 @@ mod tests {
     use super::*;
 
     static PDFIUM_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    #[cfg(windows)]
+    fn save_preserves_the_original_when_another_reader_locks_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let _exclusive = PDFIUM_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("locked.pdf");
+        let original = fixture();
+        fs::write(&path, &original).unwrap();
+        let engine = Pdfium::load().unwrap();
+        let pdf = engine.open(&path, None).unwrap();
+        let external_reader = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let error = pdf.save_as(&path).unwrap_err();
+        assert!(error.to_string().contains("Close it in other apps"));
+        assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
+        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
+        drop(external_reader);
+        pdf.save_as(&path).unwrap();
+        assert_eq!(engine.open(&path, None).unwrap().page_count(), 2);
+    }
 
     fn fixture() -> String {
         let contents =
