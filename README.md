@@ -57,3 +57,5 @@ Run the benchmark from a desktop PowerShell session with access to Windows proce
 ```
 
 Run each executable against the same local PDF and repeat on the same machine. Window startup runs from process launch to the first main window handle. TinyPDF also records elapsed time from its Rust entry point to publishing the first PDF tile to the interface. The stationary sample begins after the warmup and can still include document loading. Memory and CPU include the process tree. Working set counts shared pages in every process that uses them. GPU dedicated and shared memory come from Windows counters when available. The generated 501-page fixture exercises page count and text. The public USGS Circular 1296 download is a 112,181,765-byte real-world workload. [USGS Circular 1296](https://pubs.usgs.gov/circ/2006/1296/)
+=======
+A small native .pdf viewer that  minimizes on bloat and gives high performance
